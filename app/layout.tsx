@@ -8,6 +8,7 @@ import { AnimatedBackground } from "@/components/AnimatedBackground";
 import { SiteNav } from "@/components/SiteNav";
 import { Footer } from "@/components/Footer";
 import { PageTransition } from "@/components/PageTransition";
+import { WebAnalytics } from "@/components/WebAnalytics";
 
 const sans = Inter({
   subsets: ["latin"],
@@ -97,6 +98,12 @@ export default function RootLayout({
         <div className="desktop-only">
           <DesktopShell />
         </div>
+        {/*
+         * Vercel Web Analytics. Privacy-friendly (no cookies, no fingerprint),
+         * aggregate-only — fits the brand. The component itself short-circuits
+         * inside the Tauri webview so desktop users aren't counted.
+         */}
+        <WebAnalytics />
       </body>
     </html>
   );
