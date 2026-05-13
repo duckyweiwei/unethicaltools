@@ -1,0 +1,31 @@
+[package]
+name = "local-video-converter"
+version = "0.1.0"
+description = "Local Video Converter — native desktop app"
+authors = ["Local Video Converter"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "local_video_converter_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+incremental = false
+opt-level = "s"
+strip = true

@@ -1,0 +1,233 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07070b;
+  --color-bg-elev: #0d0d14;
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-surface-strong: rgba(255, 255, 255, 0.06);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-text: #f5f5fa;
+  --color-text-muted: #9ca0b3;
+  --color-text-dim: #6b6f80;
+  --color-accent: #8b5cf6;
+  --color-accent-2: #06b6d4;
+  --color-success: #34d399;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Smooth scrolling for in-page anchor clicks (e.g. "Pick a format" → #converters). */
+  html { scroll-behavior: smooth; }
+
+  /* Avoid the converter grid hiding behind the sticky-feeling top nav when
+   * the user jumps to it via the hero CTA. */
+  #converters { scroll-margin-top: 84px; }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+    color: white;
+  }
+
+  /* Custom scrollbar in dark UI panels */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 9999px;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.04) 0%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    border: 1px solid var(--color-border);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+  }
+
+  .glass-strong {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.06) 0%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+    border: 1px solid var(--color-border-strong);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+  }
+
+  .text-gradient {
+    background: linear-gradient(
+      120deg,
+      #ffffff 0%,
+      #d6d4ff 40%,
+      #a3e3ff 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .accent-gradient-bg {
+    background: linear-gradient(
+      120deg,
+      var(--color-accent) 0%,
+      var(--color-accent-2) 100%
+    );
+  }
+
+  .ring-accent {
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-accent) 60%, transparent),
+      0 0 40px color-mix(in oklab, var(--color-accent) 30%, transparent);
+  }
+
+  .grid-overlay {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 48px 48px;
+    background-position: -1px -1px;
+  }
+}
+
+/* Animated background orbs */
+@keyframes orb-float-a {
+  0%, 100% { transform: translate3d(-10%, -10%, 0) scale(1); }
+  50% { transform: translate3d(10%, 5%, 0) scale(1.15); }
+}
+@keyframes orb-float-b {
+  0%, 100% { transform: translate3d(10%, 10%, 0) scale(1.1); }
+  50% { transform: translate3d(-15%, -5%, 0) scale(0.95); }
+}
+@keyframes orb-float-c {
+  0%, 100% { transform: translate3d(0%, 20%, 0) scale(0.9); }
+  50% { transform: translate3d(5%, -10%, 0) scale(1.05); }
+}
+
+.orb-a { animation: orb-float-a 22s ease-in-out infinite; }
+.orb-b { animation: orb-float-b 28s ease-in-out infinite; }
+.orb-c { animation: orb-float-c 34s ease-in-out infinite; }
+
+/* Success checkmark draw-on */
+@keyframes draw-check {
+  to { stroke-dashoffset: 0; }
+}
+.draw-check path {
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: draw-check 600ms ease-out forwards;
+}
+
+/* Progress bar shimmer */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.25) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fade-in 320ms ease-out both; }
+
+/* Subtler than .fade-in — used by PageTransition on every route change.
+ * Just opacity + a tiny y-shift so the whole page doesn't appear to "drop". */
+@keyframes page-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.page-fade {
+  animation: page-fade 220ms ease-out both;
+  will-change: opacity, transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-a, .orb-b, .orb-c, .shimmer, .draw-check path, .fade-in {
+    animation: none !important;
+  }
+}
+
+/* ---------- Desktop-mode performance overrides ----------
+ * Tauri webviews (WKWebView on macOS, WebView2 on Windows) struggle with
+ * stacked backdrop-filter surfaces and large animated transforms — these
+ * tank input latency badly. In desktop we trade visual flourish for snappy
+ * interactions: drop the blur, freeze the orbs, simplify the glass cards.
+ * The website (in a real browser) keeps the full treatment. */
+body.desktop .glass,
+body.desktop .glass-strong {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: rgba(18, 18, 26, 0.85);
+}
+
+body.desktop .orb-a,
+body.desktop .orb-b,
+body.desktop .orb-c {
+  animation: none !important;
+  opacity: 0.18;
+  filter: blur(80px); /* lighter than blur-3xl (~64-80px), but no animation */
+  will-change: auto;
+}
+
+body.desktop .grid-overlay {
+  opacity: 0.25;
+}
+
+body.desktop .shimmer {
+  animation: none !important;
+  background: none;
+}
+
+/* The live "pulse" indicator on hero badges is a small but constant repaint
+ * — fine in browser, jittery in WKWebView under load. */
+body.desktop .animate-ping {
+  animation: none !important;
+}
+
+/* Tauri-only badge swap: hide the WASM badge, show the native one. */
+.badge-desktop { display: none; }
+body.desktop .badge-web { display: none; }
+body.desktop .badge-desktop { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+/* Dual-render gate: website tree visible by default, DesktopApp visible
+ * when body.desktop is set (Tauri runtime). Each wrapper uses display:contents
+ * when active so it doesn't introduce extra layout boxes. */
+.web-only { display: contents; }
+.desktop-only { display: none; }
+body.desktop .web-only { display: none; }
+body.desktop .desktop-only { display: contents; }

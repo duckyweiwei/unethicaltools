@@ -1,0 +1,25 @@
+# Dependencies + build output
+node_modules
+.next
+.next-tauri
+out
+dist
+.vercel
+
+# Local env
+.env*.local
+.DS_Store
+*.log
+
+# Next.js / TS generated
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Tauri / Rust build artifacts (large, regenerated locally)
+src-tauri/target
+src-tauri/Cargo.lock
+
+# Tauri ffmpeg sidecar binaries (60-80 MB each, exceed GitHub's 100 MB limit).
+# Re-add locally per src-tauri/binaries/README.md when building the desktop app.
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
