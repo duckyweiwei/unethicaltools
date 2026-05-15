@@ -5,7 +5,13 @@ import { SITE_URL } from "@/lib/site";
 /**
  * Sitemap. Includes the homepage + every /[converter] page.
  * Next.js generates /sitemap.xml from this at build time.
+ *
+ * `dynamic = "force-static"` lets the desktop static-export build (Tauri
+ * uses `output: "export"`) generate the file at build time instead of
+ * needing a server. The web Vercel build also benefits — no per-request
+ * regeneration cost.
  */
+export const dynamic = "force-static";
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();
 
