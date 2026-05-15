@@ -12,6 +12,7 @@ import { ProgressView } from "./ProgressView";
 import { ResultView } from "./ResultView";
 import { ErrorView } from "./ErrorView";
 import { OversizedFileNotice } from "./OversizedFileNotice";
+import { MemoryErrorView } from "./MemoryErrorView";
 import { isDesktop } from "@/lib/desktop-bridge";
 
 /** Cheap MIME-type guess for display purposes only — ffmpeg doesn't care. */
@@ -41,7 +42,25 @@ function guessMimeFromExt(name: string): string {
  */
 const BROWSER_HARD_LIMIT = 4 * 1024 ** 3;
 
-type View = "select" | "selected" | "converting" | "done" | "error";
+type View = "select" | "selected" | "converting" | "done" | "error" | "memory-error";
+
+/**
+ * Distinguishes a browser-memory failure (RangeError, ArrayBuffer allocation,
+ * WASM out-of-memory) from a regular ffmpeg error. These get a different
+ * error screen that routes the user to the desktop app instead of suggesting
+ * "the file may use an unusual codec" — which is misleading for an OOM.
+ */
+function isMemoryError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message?.toLowerCase() ?? "";
+  return (
+    err.name === "RangeError" ||
+    msg.includes("array buffer allocation") ||
+    msg.includes("memory.grow") ||
+    msg.includes("out of memory") ||
+    msg.includes("maximum supported size")
+  );
+}
 
 export interface VideoConverterProps {
   /** Input format for this page. Determines accept= filter + ffmpeg args. */
@@ -199,7 +218,10 @@ export function VideoConverter({
         "Unknown error";
       setErrorMessage(msg);
       setStage("error");
-      setView("error");
+      // Memory failures need a different screen — they can't be solved by
+      // "try a different file" of the same size, and the codec hint in the
+      // generic ErrorView is actively misleading.
+      setView(isMemoryError(err) ? "memory-error" : "error");
     }
   }, [file, detectedFormat, inputFormat, appendLog]);
 
@@ -284,6 +306,16 @@ export function VideoConverter({
       {view === "error" && (
         <ErrorView
           message={errorMessage ?? "Unknown error"}
+          onReset={handleReset}
+          onRetry={handleConvert}
+        />
+      )}
+
+      {view === "memory-error" && file && (
+        <MemoryErrorView
+          file={file}
+          format={formatForUI}
+          rawError={errorMessage ?? "Unknown allocation error"}
           onReset={handleReset}
           onRetry={handleConvert}
         />
