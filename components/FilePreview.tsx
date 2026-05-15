@@ -1,8 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { formatBytes, estimateConversionTime } from "@/lib/format";
 import type { FormatConfig } from "@/lib/formats";
 import { isDesktop } from "@/lib/desktop-bridge";
+import {
+  canAllocateForFile,
+  estimateMaxFileSizeBytes,
+  shouldProbe,
+} from "@/lib/memory";
 
 /**
  * Per-GB conversion-time priors used by estimateConversionTime() in
@@ -65,6 +71,37 @@ export function FilePreview({
       )
     : null;
 
+  /**
+   * Memory probe — runs once per file when the file's near the heuristic
+   * ceiling. Three states:
+   *   null:    still checking (or skipped because too small to bother)
+   *   true:    allocation succeeded — conversion will likely fit
+   *   false:   allocation failed — warn user before they hit Convert
+   *
+   * Skipped entirely in the Tauri app (native ffmpeg, no browser ceiling).
+   */
+  const [memCheck, setMemCheck] = useState<boolean | null>(null);
+  const [staticMax, setStaticMax] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (isDesktop()) return;
+    setStaticMax(estimateMaxFileSizeBytes());
+    if (!shouldProbe(file.size)) {
+      setMemCheck(true); // file is comfortably small, no need to test
+      return;
+    }
+    let cancelled = false;
+    canAllocateForFile(file.size).then((ok) => {
+      if (!cancelled) setMemCheck(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file]);
+
+  const probeFailed = memCheck === false;
+  const probeBorderline = staticMax != null && file.size > staticMax * 0.7;
+
   return (
     <div className="glass rounded-3xl p-6 sm:p-8 fade-in">
       <div className="flex items-start gap-5">
@@ -126,7 +163,34 @@ export function FilePreview({
             </p>
           )}
 
-          {tooBig && (
+          {/* Memory warning hierarchy (most severe wins):
+            *  1. Probe definitively failed → red, blocks user mentally
+            *  2. File over heuristic ceiling but probe succeeded → yellow caution
+            *  3. Static "over 2 GB" fallback for when probe didn't run
+            *  Hidden entirely on desktop (Tauri uses native ffmpeg). */}
+          {!isDesktop() && probeFailed && (
+            <p className="mt-3 text-xs text-rose-300/90">
+              ⚠ Your browser couldn&apos;t allocate enough memory for this file
+              ({formatBytes(file.size)}). Conversion will likely fail with an
+              out-of-memory error. Close other tabs and retry, or use the{" "}
+              <a href="/download" className="underline hover:text-rose-200">
+                desktop app
+              </a>
+              .
+            </p>
+          )}
+          {!isDesktop() && !probeFailed && probeBorderline && (
+            <p className="mt-3 text-xs text-amber-300/90">
+              This file is near your browser&apos;s memory ceiling
+              {staticMax ? ` (~${formatBytes(staticMax)})` : ""}. If conversion
+              stalls or crashes, close other tabs and retry, or use the{" "}
+              <a href="/download" className="underline hover:text-amber-200">
+                desktop app
+              </a>
+              .
+            </p>
+          )}
+          {!isDesktop() && !probeFailed && !probeBorderline && tooBig && (
             <p className="mt-3 text-xs text-amber-300/90">
               Files over 2 GB may stress browser memory. If conversion fails,
               try a shorter clip.

@@ -1,4 +1,5 @@
 import { FeatureBadges } from "./FeatureBadges";
+import { DeviceMemoryStat } from "./DeviceMemoryStat";
 import type { ConverterConfig } from "@/lib/converters";
 import { FORMATS } from "@/lib/formats";
 
@@ -43,6 +44,12 @@ export function FormatHero({ config }: { config: ConverterConfig }) {
             <span className="badge-desktop">{format.typical1GBTime.desktop}</span>
           </span>
         </span>
+      </div>
+
+      {/* Per-device max-file-size hint, populated from navigator.deviceMemory.
+        * Mounts client-side after hydration, hidden in the Tauri app. */}
+      <div className="block">
+        <DeviceMemoryStat />
       </div>
 
       <div className="mt-8 flex justify-center fade-in">
