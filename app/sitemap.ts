@@ -36,6 +36,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.5,
   };
 
+  const bleep: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/bleep`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.9,
+  };
+
   const faq: MetadataRoute.Sitemap[number] = {
     url: `${SITE_URL}/faq`,
     lastModified,
@@ -57,5 +64,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.9,
   }));
 
-  return [home, about, faq, download, suggestions, ...converters];
+  return [home, bleep, about, faq, download, suggestions, ...converters];
 }

@@ -27,6 +27,16 @@ type AnyEngine = {
     formatOrOptions: FormatConfig | { format: FormatConfig },
     cb?: ConverterCallbacks,
   ): Promise<ConversionResult>;
+  /**
+   * Optional — only the WASM engine implements it (the desktop engine has no
+   * use for it; bleep tool runs only in the browser since whisper-tiny needs
+   * the WASM/WebGPU runtime). Returning unknown lets us skip the type
+   * gymnastics across the engine union.
+   */
+  extractAudioForWhisper?: (
+    file: File,
+    cb?: ConverterCallbacks,
+  ) => Promise<{ pcm: Float32Array; sampleRate: 16000; durationSec: number }>;
   dispose(): void;
 };
 
@@ -62,6 +72,21 @@ export class ConverterClient {
     // ConverterEngine accepts the same. Pass through as object form for
     // consistency.
     return engine.convert(file, { format }, cb);
+  }
+
+  /**
+   * Extract audio for Whisper. Browser-only — throws if called inside the
+   * Tauri desktop app since the bleep tool ships browser-first.
+   */
+  async extractAudioForWhisper(
+    file: File,
+    cb: ConverterCallbacks = {},
+  ): Promise<{ pcm: Float32Array; sampleRate: 16000; durationSec: number }> {
+    const engine = await this.ensureEngine();
+    if (!engine.extractAudioForWhisper) {
+      throw new Error("Audio extraction is not supported on this runtime");
+    }
+    return engine.extractAudioForWhisper(file, cb);
   }
 
   dispose(): void {

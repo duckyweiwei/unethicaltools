@@ -207,6 +207,77 @@ export class ConverterEngine {
     }
   }
 
+  /**
+   * Extract the audio track of `file` to 16 kHz mono Float32 PCM — the
+   * exact format Whisper wants. Used by the bleep tool's transcription
+   * pipeline. Reuses the same loaded ffmpeg.wasm instance as convert().
+   *
+   * Returns: a Float32Array of normalized samples and the duration in
+   * seconds. Caller is responsible for passing this to the Whisper model.
+   */
+  async extractAudioForWhisper(
+    file: File,
+    cb: EngineCallbacks = {},
+  ): Promise<{ pcm: Float32Array; sampleRate: 16000; durationSec: number }> {
+    if (this.active) throw new Error("Engine is busy with another job");
+    if (!this.loaded) await this.load(cb);
+    if (!this.ffmpeg) throw new Error("Engine not loaded");
+
+    this.active = { cb };
+    // Try to use the actual file extension, fall back to a generic .bin so
+    // ffmpeg's demuxer probes the format from content rather than name.
+    const extMatch = file.name.match(/\.([^.]+)$/);
+    const inputName = `bleep-input.${extMatch ? extMatch[1] : "bin"}`;
+    const outputName = "bleep-audio.f32le";
+
+    try {
+      cb.onProgress?.({ stage: "reading-file", ratio: 0 });
+      await this.ffmpeg.writeFile(inputName, await fetchFile(file));
+      cb.onProgress?.({ stage: "reading-file", ratio: 1 });
+
+      // Tell ffmpeg: read input, drop video, downmix to mono, resample to
+      // 16 kHz, output as raw little-endian 32-bit floats.
+      const code = await this.ffmpeg.exec([
+        "-i", inputName,
+        "-vn",                // drop the video stream entirely
+        "-ac", "1",           // mono
+        "-ar", "16000",       // 16 kHz (Whisper input rate)
+        "-f", "f32le",        // raw 32-bit float little-endian
+        "-acodec", "pcm_f32le",
+        outputName,
+      ]);
+      if (code !== 0) {
+        throw new Error(`Audio extraction failed (ffmpeg exit ${code})`);
+      }
+
+      const raw = await this.ffmpeg.readFile(outputName);
+      if (typeof raw === "string") {
+        throw new Error("ffmpeg returned a string — expected binary PCM");
+      }
+      // Bytes → Float32 view. The underlying ArrayBuffer is detachable, so
+      // copy it before passing across the worker/thread boundary in the
+      // future. For now, we copy via slice() to be safe.
+      const buf = (raw.buffer as ArrayBuffer).slice(
+        raw.byteOffset,
+        raw.byteOffset + raw.byteLength,
+      );
+      const pcm = new Float32Array(buf);
+      const durationSec = pcm.length / 16000;
+
+      return { pcm, sampleRate: 16000, durationSec };
+    } finally {
+      // Clean both files even on success — they're scratch.
+      for (const f of [inputName, outputName]) {
+        try {
+          await this.ffmpeg.deleteFile(f);
+        } catch {
+          /* ignore */
+        }
+      }
+      this.active = null;
+    }
+  }
+
   async convert(
     file: File,
     options: ConvertOptions,
