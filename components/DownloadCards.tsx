@@ -1,19 +1,30 @@
 "use client";
 
 /**
- * Per-platform download cards. The actual installer URLs are wired up at
- * build time once the Tauri build artifacts are uploaded to a release host
- * (GitHub Releases, S3, etc.). Until then, the buttons surface a clear
- * "coming soon" state instead of dead links.
+ * Per-platform download cards. URLs point at GitHub Releases, which serves
+ * binaries via stable URLs we can hard-code: every release tag becomes a
+ * download path under
+ *   https://github.com/duckyweiwei/unethicaltools/releases/download/<tag>/<filename>
+ *
+ * To ship a new build:
+ *   1. Build with `npm run tauri:build`.
+ *   2. Create a release on GitHub with tag `v<version>`.
+ *   3. Upload the DMG (and .msi when we have one) as release assets.
+ *   4. The URLs below resolve automatically; no code change needed unless
+ *      the version bumps.
  */
 
+const RELEASE_BASE =
+  "https://github.com/duckyweiwei/unethicaltools/releases/download/v0.1.0";
+
 interface BuildLinks {
-  macUniversal?: string; // .dmg
-  windowsX64?: string; // .msi or .exe
+  macAppleSilicon?: string;
+  windowsX64?: string;
 }
 
 const BUILD_LINKS: BuildLinks = {
-  // TODO: replace with real release URLs after first Tauri build is published.
+  macAppleSilicon: `${RELEASE_BASE}/LocalVideoConverter-0.1.0-aarch64.dmg`,
+  // TODO: build + upload Windows .msi
 };
 
 export function DownloadCards() {
@@ -22,10 +33,10 @@ export function DownloadCards() {
       <ul className="grid sm:grid-cols-2 gap-4 sm:gap-6">
         <PlatformCard
           platform="macOS"
-          subtitle="11 Big Sur or newer · Universal (Apple Silicon + Intel)"
+          subtitle="11 Big Sur or newer · Apple Silicon (M1/M2/M3/M4)"
           icon={<AppleIcon />}
-          href={BUILD_LINKS.macUniversal}
-          fileLabel="LocalVideoConverter.dmg"
+          href={BUILD_LINKS.macAppleSilicon}
+          fileLabel="LocalVideoConverter-0.1.0-aarch64.dmg"
         />
         <PlatformCard
           platform="Windows"

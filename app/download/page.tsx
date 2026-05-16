@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { DownloadHero } from "@/components/DownloadHero";
 import { DownloadCards } from "@/components/DownloadCards";
+import { InstallInstructions } from "@/components/InstallInstructions";
 import { DownloadInfo } from "@/components/DownloadInfo";
 import { StructuredData } from "@/components/StructuredData";
 import { absoluteUrl, SITE_NAME } from "@/lib/site";
@@ -38,6 +39,7 @@ export default function DownloadPage() {
       />
       <DownloadHero />
       <DownloadCards />
+      <InstallInstructions />
       <DownloadInfo />
     </>
   );
