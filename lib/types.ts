@@ -6,6 +6,7 @@ export type Stage =
   | "reading-file"
   | "remuxing"
   | "encoding"
+  | "applying-filter"
   | "writing-output"
   | "done"
   | "error";

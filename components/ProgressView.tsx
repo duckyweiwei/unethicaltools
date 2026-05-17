@@ -10,6 +10,9 @@ const STAGE_LABELS: Record<Stage, string> = {
   "reading-file": "Reading file",
   remuxing: "Remuxing (fast path)",
   encoding: "Re-encoding (fallback)",
+  // The converter flow never enters this stage today (only the bleep
+  // tool uses it), but the Record type demands every Stage variant.
+  "applying-filter": "Applying audio filter",
   "writing-output": "Finalizing",
   done: "Done",
   error: "Error",

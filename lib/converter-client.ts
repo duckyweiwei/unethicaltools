@@ -37,6 +37,12 @@ type AnyEngine = {
     file: File,
     cb?: ConverterCallbacks,
   ) => Promise<{ pcm: Float32Array; sampleRate: 16000; durationSec: number }>;
+  /** Browser-only — same reason as extractAudioForWhisper. */
+  applyAudioMuteFilter?: (
+    file: File,
+    options: { filter: string },
+    cb?: ConverterCallbacks,
+  ) => Promise<{ blob: Blob; filename: string; durationMs: number; inputBytes: number; outputBytes: number }>;
   dispose(): void;
 };
 
@@ -89,10 +95,32 @@ export class ConverterClient {
     return engine.extractAudioForWhisper(file, cb);
   }
 
+  /**
+   * Apply an ffmpeg audio-only mute filter to `file`. Browser-only.
+   * Caller builds the filter via `buildMuteFilter()` from
+   * lib/bleep/mute-filter.
+   */
+  async applyAudioMuteFilter(
+    file: File,
+    options: { filter: string },
+    cb: ConverterCallbacks = {},
+  ) {
+    const engine = await this.ensureEngine();
+    if (!engine.applyAudioMuteFilter) {
+      throw new Error("Audio mute filtering is not supported on this runtime");
+    }
+    return engine.applyAudioMuteFilter(file, options, cb);
+  }
+
   dispose(): void {
     this.engineInstance?.dispose();
     this.engineInstance = null;
     this.enginePromise = null;
+  }
+
+  /** Has the ffmpeg.wasm engine been loaded in this session yet? */
+  isLoaded(): boolean {
+    return this.engineInstance !== null;
   }
 }
 

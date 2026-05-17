@@ -43,6 +43,27 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.9,
   };
 
+  const transcribe: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/transcribe`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.9,
+  };
+
+  const tools: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/tools`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.8,
+  };
+
+  const convertersHub: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/converters`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.85,
+  };
+
   const faq: MetadataRoute.Sitemap[number] = {
     url: `${SITE_URL}/faq`,
     lastModified,
@@ -64,5 +85,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.9,
   }));
 
-  return [home, bleep, about, faq, download, suggestions, ...converters];
+  return [home, tools, convertersHub, bleep, transcribe, about, faq, download, suggestions, ...converters];
 }

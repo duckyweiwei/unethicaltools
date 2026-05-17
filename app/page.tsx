@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Hero } from "@/components/Hero";
-import { BleepHub } from "@/components/BleepHub";
-import { ConverterHub } from "@/components/ConverterHub";
+import { AllToolsList } from "@/components/AllToolsList";
 import { InfoSection } from "@/components/InfoSection";
 import { AboutBrand } from "@/components/AboutBrand";
 import { StructuredData } from "@/components/StructuredData";
@@ -40,8 +39,7 @@ export default function HomePage() {
         ]}
       />
       <Hero />
-      <BleepHub />
-      <ConverterHub />
+      <AllToolsList />
       <InfoSection />
       <AboutBrand />
     </>

@@ -82,7 +82,7 @@ export default function BleepPage() {
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
           </span>
-          Building · phase 2 of 6 — audio extraction
+          Building · phase 5 of 6 — mute filter
         </div>
 
         <h1 className="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-gradient leading-[1.05] fade-in">
@@ -115,9 +115,9 @@ export default function BleepPage() {
             input format. No upload.
           </Step>
           <Step n="3" title="On-device transcription">
-            transformers.js runs Whisper-tiny in your browser. ~40 MB model,
-            cached after first visit. Returns each word with a precise
-            timestamp.
+            transformers.js runs Whisper-base in your browser, on WebGPU
+            when available. ~80 MB model, cached after first visit. Returns
+            each word with a precise timestamp.
           </Step>
           <Step n="4" title="Profanity matched">
             Each word is checked against a curated wordlist (~400 terms).

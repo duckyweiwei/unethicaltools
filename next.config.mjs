@@ -24,6 +24,21 @@ const nextConfig = {
   // directory (.next-tauri/) and avoid corrupting the website preview's
   // .next/ when both are running at the same time.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
+  webpack: (config) => {
+    // transformers.js v4 uses `import.meta` patterns that webpack flags as a
+    // "Critical dependency" warning on every compile. The package works fine
+    // at runtime in the browser — the warning is just bundler noise and
+    // makes the dev log unreadable when iterating on the bleep/transcribe
+    // tools. Suppress it specifically; do not blanket-ignore other warnings.
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings ?? []),
+      {
+        module: /node_modules\/@huggingface\/transformers/,
+        message: /Critical dependency: Accessing import\.meta directly/,
+      },
+    ];
+    return config;
+  },
   ...(isDesktop
     ? {
         output: "export",

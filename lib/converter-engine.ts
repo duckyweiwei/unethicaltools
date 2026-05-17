@@ -52,6 +52,11 @@ function deriveOutputName(file: File): string {
   return `${base}.mp4`;
 }
 
+function deriveBleepedName(file: File): string {
+  const base = file.name.replace(/\.[^.]+$/, "") || "video";
+  return `${base}-bleeped.mp4`;
+}
+
 export class ConverterEngine {
   private ffmpeg: FFmpeg | null = null;
   private loaded = false;
@@ -129,7 +134,7 @@ export class ConverterEngine {
 
   /* ---------- conversion pipeline ---------- */
 
-  private attachProgress(stage: "remuxing" | "encoding") {
+  private attachProgress(stage: "remuxing" | "encoding" | "applying-filter") {
     const ff = this.ffmpeg!;
     const handler = ({ progress, time }: { progress: number; time: number }) => {
       const ratio = Math.max(0, Math.min(1, progress));
@@ -273,6 +278,91 @@ export class ConverterEngine {
         } catch {
           /* ignore */
         }
+      }
+      this.active = null;
+    }
+  }
+
+  /**
+   * Mute specific time ranges in `file`'s audio track using an ffmpeg
+   * `volume=enable='between(t,a,b)+…':volume=0` filter. Video stream is
+   * copied (no re-encode), audio is re-encoded to AAC.
+   *
+   * The filter expression is the caller's responsibility — build it via
+   * `buildMuteFilter()` from `lib/bleep/mute-filter`. Letting the caller
+   * own filter construction keeps the engine agnostic of the bleep tool's
+   * coalescing/padding policy.
+   *
+   * Returns the muted MP4 as a Blob + a derived filename.
+   */
+  async applyAudioMuteFilter(
+    file: File,
+    options: { filter: string },
+    cb: EngineCallbacks = {},
+  ): Promise<{ blob: Blob; filename: string; durationMs: number; inputBytes: number; outputBytes: number }> {
+    if (this.active) throw new Error("Engine is busy with another job");
+    if (!this.loaded) await this.load(cb);
+    if (!this.ffmpeg) throw new Error("Engine not loaded");
+    if (!options.filter) throw new Error("Empty mute filter — nothing to do");
+
+    this.active = { cb };
+    const startedAt = performance.now();
+    const inputBytes = file.size;
+    const extMatch = file.name.match(/\.([^.]+)$/);
+    const inputName = `mute-input.${extMatch ? extMatch[1] : "bin"}`;
+    const outputName = "mute-output.mp4";
+
+    try {
+      cb.onProgress?.({ stage: "reading-file", ratio: 0 });
+      await this.ffmpeg.writeFile(inputName, await fetchFile(file));
+      cb.onProgress?.({ stage: "reading-file", ratio: 1 });
+
+      cb.onProgress?.({ stage: "applying-filter", ratio: 0 });
+      const detach = this.attachProgress("applying-filter");
+      let code: number;
+      try {
+        code = await this.ffmpeg.exec([
+          "-i", inputName,
+          "-map", "0:v?",
+          "-map", "0:a?",
+          // Video: stream-copy (no quality loss, no re-encode time).
+          "-c:v", "copy",
+          // Audio: filter forces re-encode; use AAC at a reasonable bitrate.
+          "-c:a", "aac",
+          "-b:a", "192k",
+          "-af", options.filter,
+          "-movflags", "+faststart",
+          "-f", "mp4",
+          outputName,
+        ]);
+      } finally {
+        detach();
+      }
+      if (code !== 0) {
+        throw new Error(`Mute filter failed (ffmpeg exit ${code})`);
+      }
+
+      const raw = await this.ffmpeg.readFile(outputName);
+      if (typeof raw === "string") {
+        throw new Error("ffmpeg returned a string — expected MP4 bytes");
+      }
+      const buf = (raw.buffer as ArrayBuffer).slice(
+        raw.byteOffset,
+        raw.byteOffset + raw.byteLength,
+      );
+      const blob = new Blob([buf], { type: "video/mp4" });
+      cb.onProgress?.({ stage: "writing-output", ratio: 1 });
+
+      return {
+        blob,
+        filename: deriveBleepedName(file),
+        durationMs: performance.now() - startedAt,
+        inputBytes,
+        outputBytes: blob.size,
+      };
+    } finally {
+      for (const f of [inputName, outputName]) {
+        try { await this.ffmpeg.deleteFile(f); } catch { /* ignore */ }
       }
       this.active = null;
     }

@@ -9,11 +9,22 @@ import { usePathname } from "next/navigation";
  * every route without each page passing a `current` prop.
  *
  * Tabs:
- *   Home          → /     (active on / and every /<converter-slug> route,
- *                          since converter pages are the "Home → pick a format"
- *                          flow continuation)
- *   FAQ           → /faq
- *   Suggestions   → /suggestions
+ *   Home              → /
+ *   Profanity Censor  → /bleep
+ *   Video to Text     → /transcribe
+ *   Video Converter   → /converters  (catalog of all 7 format converters,
+ *                                      stays active on per-format routes too
+ *                                      like /ts-to-mp4)
+ *   FAQ               → /faq
+ *   Suggestions       → /suggestions
+ *
+ * Each tool has its own top-level tab; the older `/tools` directory page
+ * stays alive as a route but is no longer linked from the nav (per-tool
+ * tabs supersede it).
+ *
+ * Per-converter slugs all match `*-to-mp4`, so we can detect them with a
+ * regex and route the highlight to the Video Converter tab without
+ * importing the (text-heavy) CONVERTERS registry into this client bundle.
  *
  * Logo behavior:
  *   - Desktop (sm+): wordmark image at public/brand/wordmark.png
@@ -22,6 +33,12 @@ import { usePathname } from "next/navigation";
  *   the brand actually wants on dark. (If a future variant needs the dark
  *   source flipped, do it in image editing software, not via filter.)
  */
+const CONVERTER_PATH = /^\/[a-z0-9]+-to-mp4$/;
+
+function isConverterRoute(p: string): boolean {
+  return p === "/converters" || CONVERTER_PATH.test(p);
+}
+
 const TABS: Array<{
   href: string;
   label: string;
@@ -30,12 +47,25 @@ const TABS: Array<{
   {
     href: "/",
     label: "Home",
-    // Active on / and on per-format routes — Home covers the "browse +
-    // pick a converter" path. Only /faq, /suggestions, /download have
-    // their own tabs / CTA, so anything else is "home territory".
-    isActive: (p) =>
-      p === "/" ||
-      (p !== "/faq" && p !== "/suggestions" && p !== "/download"),
+    // Each tool has its own tab now, so Home only highlights on /. Other
+    // misc routes (e.g. /about, /download) deliberately leave no tab
+    // highlighted — they're outside the tools axis.
+    isActive: (p) => p === "/",
+  },
+  {
+    href: "/bleep",
+    label: "Profanity Censor",
+    isActive: (p) => p === "/bleep",
+  },
+  {
+    href: "/transcribe",
+    label: "Video to Text",
+    isActive: (p) => p === "/transcribe",
+  },
+  {
+    href: "/converters",
+    label: "Video Converter",
+    isActive: isConverterRoute,
   },
   {
     href: "/faq",
