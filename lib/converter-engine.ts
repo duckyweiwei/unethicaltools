@@ -57,6 +57,11 @@ function deriveBleepedName(file: File): string {
   return `${base}-bleeped.mp4`;
 }
 
+function deriveAudioOutputName(file: File): string {
+  const base = file.name.replace(/\.[^.]+$/, "") || "audio";
+  return `${base}.mp3`;
+}
+
 export class ConverterEngine {
   private ffmpeg: FFmpeg | null = null;
   private loaded = false;
@@ -356,6 +361,88 @@ export class ConverterEngine {
       return {
         blob,
         filename: deriveBleepedName(file),
+        durationMs: performance.now() - startedAt,
+        inputBytes,
+        outputBytes: blob.size,
+      };
+    } finally {
+      for (const f of [inputName, outputName]) {
+        try { await this.ffmpeg.deleteFile(f); } catch { /* ignore */ }
+      }
+      this.active = null;
+    }
+  }
+
+  /**
+   * Convert an audio file to MP3 using libmp3lame at VBR quality level 2
+   * (~190 kbps — the audiophile-vs-portable sweet spot). No remux path
+   * since MP3 is a final-format encoder target; even an MP3 input is
+   * re-encoded to normalize the bitrate / strip metadata cruft.
+   *
+   * Browser-only today (callers route through ConverterClient which only
+   * exposes this on the WASM engine). The desktop engine could implement
+   * the same shape later via native ffmpeg.
+   */
+  async convertAudio(
+    file: File,
+    options: { ffmpegInputExt: string },
+    cb: EngineCallbacks = {},
+  ): Promise<ConversionResult> {
+    if (this.active) throw new Error("A conversion is already in progress");
+    if (!this.loaded) await this.load(cb);
+    if (!this.ffmpeg) throw new Error("Engine not loaded");
+
+    this.active = { cb };
+    const startedAt = performance.now();
+    const inputBytes = file.size;
+    const inputName = `audio-input.${options.ffmpegInputExt}`;
+    const outputName = "audio-output.mp3";
+
+    try {
+      this.emitStage(cb, "reading-file", 0);
+      const bytes = await fetchFile(file);
+      await this.ffmpeg.writeFile(inputName, bytes);
+      this.emitStage(cb, "reading-file", 1);
+
+      cb.onProgress?.({ stage: "encoding", ratio: 0 });
+      const detach = this.attachProgress("encoding");
+      let code: number;
+      try {
+        code = await this.ffmpeg.exec([
+          "-i", inputName,
+          // Drop any tagged-along video / image streams (cover art, etc.) —
+          // we only want the audio track in the MP3 output.
+          "-vn",
+          "-c:a", "libmp3lame",
+          // VBR quality level 2 (~190 kbps): transparent to most listeners,
+          // smaller than 320 CBR. Standard "transparent" recommendation.
+          "-q:a", "2",
+          // ID3v2.3 for max compatibility with older players.
+          "-id3v2_version", "3",
+          outputName,
+        ]);
+      } finally {
+        detach();
+      }
+      if (code !== 0) {
+        throw new Error(`Audio conversion failed (ffmpeg exit ${code})`);
+      }
+
+      const raw = await this.ffmpeg.readFile(outputName);
+      if (typeof raw === "string") {
+        throw new Error("ffmpeg returned a string — expected MP3 bytes");
+      }
+      const buffer = (raw.buffer as ArrayBuffer).slice(
+        raw.byteOffset,
+        raw.byteOffset + raw.byteLength,
+      );
+      const blob = new Blob([buffer], { type: "audio/mpeg" });
+      this.emitStage(cb, "writing-output", 1);
+
+      return {
+        mode: "encode",
+        blob,
+        filename: deriveAudioOutputName(file),
         durationMs: performance.now() - startedAt,
         inputBytes,
         outputBytes: blob.size,

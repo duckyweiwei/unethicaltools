@@ -24,7 +24,13 @@ const nextConfig = {
   // directory (.next-tauri/) and avoid corrupting the website preview's
   // .next/ when both are running at the same time.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
-  webpack: (config) => {
+  // libheif-js is a ~5 MB Emscripten browser-only module — its top-level
+  // require() chain calls Node-specific APIs that explode during Next.js's
+  // server-side prerender of routes that transitively import it. Marking
+  // it server-external means the server never tries to bundle it; the
+  // client lazy-loads it at runtime via `await import('libheif-js')`.
+  serverExternalPackages: ["libheif-js"],
+  webpack: (config, { isServer }) => {
     // transformers.js v4 uses `import.meta` patterns that webpack flags as a
     // "Critical dependency" warning on every compile. The package works fine
     // at runtime in the browser — the warning is just bundler noise and
@@ -36,7 +42,26 @@ const nextConfig = {
         module: /node_modules\/@huggingface\/transformers/,
         message: /Critical dependency: Accessing import\.meta directly/,
       },
+      // libheif-js's Emscripten bundle has the same import.meta noise.
+      {
+        module: /node_modules\/libheif-js/,
+        message: /Critical dependency/,
+      },
     ];
+    // libheif-js is an Emscripten "universal" module — its top-level
+    // body does `require("fs")` / `require("path")` for the Node branch.
+    // In the browser bundle those modules don't exist; webpack's default
+    // behavior is to fail with "module not found". Polyfilling to `false`
+    // tells webpack to emit an empty module for those, which is correct
+    // since the Node branch never executes in a browser.
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        path: false,
+        crypto: false,
+      };
+    }
     return config;
   },
   ...(isDesktop

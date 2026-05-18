@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 import { CONVERTERS } from "@/lib/converters";
+import { AUDIO_CONVERTERS } from "@/lib/audio-converters";
+import { IMAGE_CONVERTERS } from "@/lib/image-converters";
 import { SITE_URL } from "@/lib/site";
 
 /**
@@ -64,6 +66,27 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.85,
   };
 
+  const videoConverterHub: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/video-converter`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.85,
+  };
+
+  const audioConverterHub: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/audio-converter`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.85,
+  };
+
+  const imageConverterHub: MetadataRoute.Sitemap[number] = {
+    url: `${SITE_URL}/image-converter`,
+    lastModified,
+    changeFrequency: "weekly",
+    priority: 0.85,
+  };
+
   const faq: MetadataRoute.Sitemap[number] = {
     url: `${SITE_URL}/faq`,
     lastModified,
@@ -85,5 +108,35 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.9,
   }));
 
-  return [home, tools, convertersHub, bleep, transcribe, about, faq, download, suggestions, ...converters];
+  const audioConverters: MetadataRoute.Sitemap = AUDIO_CONVERTERS.map((c) => ({
+    url: `${SITE_URL}/${c.slug}`,
+    lastModified,
+    changeFrequency: "monthly",
+    priority: 0.85,
+  }));
+
+  const imageConverters: MetadataRoute.Sitemap = IMAGE_CONVERTERS.map((c) => ({
+    url: `${SITE_URL}/${c.slug}`,
+    lastModified,
+    changeFrequency: "monthly",
+    priority: 0.85,
+  }));
+
+  return [
+    home,
+    tools,
+    convertersHub,
+    videoConverterHub,
+    audioConverterHub,
+    imageConverterHub,
+    bleep,
+    transcribe,
+    about,
+    faq,
+    download,
+    suggestions,
+    ...converters,
+    ...audioConverters,
+    ...imageConverters,
+  ];
 }

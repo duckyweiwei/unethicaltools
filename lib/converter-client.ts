@@ -43,6 +43,16 @@ type AnyEngine = {
     options: { filter: string },
     cb?: ConverterCallbacks,
   ) => Promise<{ blob: Blob; filename: string; durationMs: number; inputBytes: number; outputBytes: number }>;
+  /**
+   * Audio → MP3 conversion. Browser-only today (the WASM engine implements
+   * it; the desktop engine could grow a parallel method later via native
+   * ffmpeg). Used by the Audio Converter tool.
+   */
+  convertAudio?: (
+    file: File,
+    options: { ffmpegInputExt: string },
+    cb?: ConverterCallbacks,
+  ) => Promise<ConversionResult>;
   dispose(): void;
 };
 
@@ -110,6 +120,22 @@ export class ConverterClient {
       throw new Error("Audio mute filtering is not supported on this runtime");
     }
     return engine.applyAudioMuteFilter(file, options, cb);
+  }
+
+  /**
+   * Convert an audio file to MP3. Browser-only — see comment on
+   * applyAudioMuteFilter / extractAudioForWhisper.
+   */
+  async convertAudio(
+    file: File,
+    options: { ffmpegInputExt: string },
+    cb: ConverterCallbacks = {},
+  ): Promise<ConversionResult> {
+    const engine = await this.ensureEngine();
+    if (!engine.convertAudio) {
+      throw new Error("Audio conversion is not supported on this runtime");
+    }
+    return engine.convertAudio(file, options, cb);
   }
 
   dispose(): void {

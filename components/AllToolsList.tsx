@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { CONVERTERS } from "@/lib/converters";
 import { FORMATS } from "@/lib/formats";
+import { AUDIO_CONVERTERS } from "@/lib/audio-converters";
+import { AUDIO_FORMATS } from "@/lib/audio-formats";
+import { IMAGE_CONVERTERS } from "@/lib/image-converters";
+import { IMAGE_FORMATS } from "@/lib/image-formats";
 
 /**
  * Single source of truth for "every tool, one card each, one-line blurb,
@@ -63,6 +67,36 @@ const CONVERTER_BLURBS: Record<string, string> = {
     "Convert MPEG-1 / MPEG-2 to H.264 MP4. Dramatically smaller output at near-identical quality.",
 };
 
+const AUDIO_BLURBS: Record<string, string> = {
+  "wav-to-mp3":
+    "Compress lossless WAV studio audio to portable MP3 (~190 kbps VBR). 5-10× smaller, plays everywhere.",
+  "flac-to-mp3":
+    "Trade lossless FLAC for universal MP3 compatibility. Keep the FLAC for the library, ship MP3 for the road.",
+  "m4a-to-mp3":
+    "Make iTunes / Apple Music / iPhone voice memos universally playable. Convert M4A (AAC) to MP3.",
+  "ogg-to-mp3":
+    "Convert OGG / Vorbis / Opus to MP3 for older players and corporate upload forms that whitelist .mp3.",
+  "wma-to-mp3":
+    "Rescue legacy Windows Media Audio archives into modern MP3 — plays on anything built since 1999.",
+  "aiff-to-mp3":
+    "Shrink Apple's uncompressed AIFF (GarageBand, Logic exports) to portable MP3.",
+};
+
+const IMAGE_BLURBS: Record<string, string> = {
+  "heic-to-jpg":
+    "Convert iPhone HEIC photos to universal JPG so Windows / Discord / web forms accept them.",
+  "avif-to-jpg":
+    "Convert modern AVIF images to universal JPG for older tools, editors, and native apps.",
+  "webp-to-jpg":
+    "Convert Google's WEBP to JPG for older email clients, Office apps, and legacy CMSes.",
+  "png-to-jpg":
+    "Shrink large lossless PNG photos to portable JPG (5-15× smaller for photos, transparent dropped).",
+  "png-to-webp":
+    "Modernize PNG to smaller WEBP for the web — transparency preserved.",
+  "jpg-to-webp":
+    "Modernize JPG photos to smaller WEBP for faster page loads (~25-35% smaller).",
+};
+
 function converterEntries(): ToolEntry[] {
   return CONVERTERS.map((c) => {
     const fmt = FORMATS[c.input];
@@ -89,6 +123,53 @@ function converterEntries(): ToolEntry[] {
   });
 }
 
+function audioConverterEntries(): ToolEntry[] {
+  return AUDIO_CONVERTERS.map((c) => {
+    const fmt = AUDIO_FORMATS[c.input];
+    const tone =
+      fmt.losslessness === "lossless"
+        ? { label: "Lossless source", cls: "border-emerald-400/25 text-emerald-300/90" }
+        : { label: "Lossy source", cls: "border-amber-400/25 text-amber-300/90" };
+    return {
+      href: `/${c.slug}`,
+      title: `${fmt.displayName} → MP3`,
+      blurb: AUDIO_BLURBS[c.slug] ?? c.tagline,
+      icon: (
+        <span className="font-mono text-[10px] leading-none">
+          .{fmt.extensions[0]}
+        </span>
+      ),
+      iconWrap:
+        "bg-white/[0.04] border border-[var(--color-border)] text-[var(--color-text)]",
+      badge: tone,
+    };
+  });
+}
+
+function imageConverterEntries(): ToolEntry[] {
+  return IMAGE_CONVERTERS.map((c) => {
+    const inF = IMAGE_FORMATS[c.input];
+    const outF = IMAGE_FORMATS[c.output];
+    const tone =
+      inF.losslessness === "lossless"
+        ? { label: "From lossless", cls: "border-emerald-400/25 text-emerald-300/90" }
+        : { label: "From lossy", cls: "border-amber-400/25 text-amber-300/90" };
+    return {
+      href: `/${c.slug}`,
+      title: `${inF.displayName} → ${outF.displayName}`,
+      blurb: IMAGE_BLURBS[c.slug] ?? c.tagline,
+      icon: (
+        <span className="font-mono text-[10px] leading-none">
+          .{inF.extensions[0]}
+        </span>
+      ),
+      iconWrap:
+        "bg-white/[0.04] border border-[var(--color-border)] text-[var(--color-text)]",
+      badge: tone,
+    };
+  });
+}
+
 export function AllToolsList({
   showHeading = true,
   only,
@@ -102,7 +183,12 @@ export function AllToolsList({
    */
   only?: readonly string[];
 }) {
-  const allTools = [...APP_TOOLS, ...converterEntries()];
+  const allTools = [
+    ...APP_TOOLS,
+    ...converterEntries(),
+    ...audioConverterEntries(),
+    ...imageConverterEntries(),
+  ];
   const filterSet = only ? new Set(only) : null;
   const tools = filterSet
     ? allTools.filter((t) => filterSet.has(t.href))
