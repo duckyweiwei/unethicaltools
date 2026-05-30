@@ -1,47 +1,15 @@
-import type { Metadata } from "next";
-import { Hero } from "@/components/Hero";
-import { AllToolsList } from "@/components/AllToolsList";
-import { InfoSection } from "@/components/InfoSection";
-import { AboutBrand } from "@/components/AboutBrand";
-import { StructuredData } from "@/components/StructuredData";
-import { CONVERTERS } from "@/lib/converters";
-import { FORMATS } from "@/lib/formats";
-import { websiteSchema, breadcrumbSchema } from "@/lib/structured-data";
-import { absoluteUrl, SITE_NAME } from "@/lib/site";
-
-const formatList = CONVERTERS.map((c) => FORMATS[c.input].displayName).join(", ");
-
-export const metadata: Metadata = {
-  title: `${SITE_NAME} — Private Browser Video Converter (No Upload)`,
-  description: `Convert ${formatList} to MP4 locally in your browser. No upload, no account, no watermark — files never leave your computer.`,
-  alternates: { canonical: absoluteUrl("/") },
-  openGraph: {
-    type: "website",
-    url: absoluteUrl("/"),
-    title: `${SITE_NAME} — Private Browser Video Converter`,
-    description: `Convert ${formatList} to MP4 locally in your browser.`,
-    siteName: SITE_NAME,
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: `${SITE_NAME} — Private Browser Video Converter`,
-    description: `Convert ${formatList} to MP4 locally in your browser.`,
-  },
-};
-
-export default function HomePage() {
+export default function Home() {
   return (
-    <>
-      <StructuredData
-        data={[
-          websiteSchema(),
-          breadcrumbSchema([{ name: "Home", path: "/" }]),
-        ]}
-      />
-      <Hero />
-      <AllToolsList />
-      <InfoSection />
-      <AboutBrand />
-    </>
+    <main className="flex min-h-screen flex-col items-center justify-center gap-6 px-6 text-center">
+      <span className="text-xs uppercase tracking-[0.3em] text-neutral-500">
+        unethicaltools
+      </span>
+      <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-6xl">
+        Something new is in the works.
+      </h1>
+      <p className="max-w-md text-pretty text-neutral-400">
+        Clean slate. The next thing is being built right here.
+      </p>
+    </main>
   );
 }
