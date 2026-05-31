@@ -5,6 +5,9 @@ out
 dist
 .vercel
 
+# Generated test fixtures (regenerate via scripts/gen-sample-pdfs.mjs)
+samples
+
 # Local env
 .env*.local
 .DS_Store
