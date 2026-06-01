@@ -250,13 +250,6 @@ export default function Home() {
 
       {/* ---- Social proof + infinite exam marquee ---- */}
       <section className="overflow-hidden border-y border-neutral-200 bg-white py-8">
-        <div className="mx-auto mb-6 flex max-w-6xl items-center justify-center gap-3 px-6 text-center">
-          <Stars />
-          <span className="text-sm font-medium text-neutral-700">
-            Trusted by students all over the globe
-          </span>
-        </div>
-
         {/* Seamless CSS-only marquee. The list is duplicated and the track
             slides by exactly one copy (-50%), so the loop is invisible. It's
             decorative — the same exams are listed (and linked) in the sections
