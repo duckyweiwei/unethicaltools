@@ -1,5 +1,6 @@
 import type { Question, QuestionOption, Quiz, QuizSource, SkippedItem } from "../../../domain/types";
 import { newQuestionId, newQuizId } from "../../../domain/ids";
+import { hasBlank } from "../../../study/cloze";
 import type { ExtractedDoc, Word } from "../extract";
 import { scoreQuestion } from "./confidence";
 import {
@@ -9,14 +10,24 @@ import {
   type KeyPair,
   keyPairs,
   matchAnswerTag,
+  matchAnswerTagText,
   matchExplanation,
+  matchKeyText,
+  matchMultiAnswerTag,
+  matchMultiSelect,
   matchOption,
   matchQuestion,
   matchSectionHeader,
+  matchTrueFalseLead,
+  normalizeTrueFalse,
+  parseMarkAllocation,
   repairGluedWords,
   splitEnumeratedStem,
   splitInlineOptions,
 } from "./patterns";
+
+export { parseMarkScheme } from "./mark-scheme";
+export type { MarkSchemeEntry } from "./mark-scheme";
 
 /**
  * Stage 3 + 4 — structure parsing and answer reconciliation.
@@ -48,6 +59,11 @@ interface Draft {
   stemLines: string[];
   options: DraftOption[];
   inlineAnswer: string | null;
+  /** Two-or-more option labels from a multi-answer tag ("Answers: B, D"), for
+   *  "select all that apply" MCQs. Null when no multi-answer tag was seen. */
+  inlineAnswers: string[] | null;
+  /** Free-text answer found inline ("Answer: Mitochondria"), for short-answer. */
+  openAnswer: string | null;
   explanationLines: string[];
   mode: "stem" | "options" | "explanation";
   /** False when the question sits under an explicit non-MCQ section header. */
@@ -57,16 +73,26 @@ interface Draft {
 export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
   const drafts: Draft[] = [];
   const keyMap = new Map<number, string>();
+  // Free-text answers from a short-answer key ("1. Mitochondria"), keyed by
+  // question number — the reference text revealed for self-grading.
+  const answerKeyText = new Map<number, string>();
   let cur: Draft | null = null;
   let inKeySection = false;
   let sectionIsMcq = true; // until a header says otherwise, treat all as MCQ
+  // Monotonic-number guard: `lastQ` is the number of the last STARTED question;
+  // `enumNext` is the next index expected while absorbing a stem's numbered
+  // sub-enumeration ("Define the following: 1. … 2. … 3. …"). Both reset at
+  // section / answer-key boundaries so each section can renumber from 1.
+  let lastQ: number | null = null;
+  let enumNext: number | null = null;
 
   const commit = () => {
     if (cur) drafts.push(cur);
     cur = null;
   };
 
-  for (const line of doc.lines) {
+  for (let li = 0; li < doc.lines.length; li++) {
+    const line = doc.lines[li];
     const text = line.text;
     if (!text.trim()) continue;
 
@@ -77,6 +103,8 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
       commit();
       sectionIsMcq = sec.isMcq;
       inKeySection = false;
+      lastQ = null;
+      enumNext = null;
       continue;
     }
 
@@ -84,6 +112,8 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
     if (isAnswerKeyHeader(text)) {
       inKeySection = true;
       commit();
+      lastQ = null;
+      enumNext = null;
       continue;
     }
 
@@ -99,30 +129,81 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
         for (const p of ps) keyMap.set(p.number, p.label);
         continue;
       }
+      // No letter pairs on this key row → a free-text short-answer key entry.
+      const kt = matchKeyText(text);
+      if (kt) {
+        answerKeyText.set(kt.number, kt.text);
+        continue;
+      }
     }
 
-    // New question.
+    // New question — guarded against a stem's numbered sub-enumeration
+    // ("Define the following: 1. … 2. … 3. …") whose items each parse as a
+    // numbered question. We START a new question only when the number ADVANCES
+    // the main sequence; a numbering reset (n <= lastQ) anchors a sub-list, and
+    // consecutive items continue it. The one genuinely ambiguous case — a
+    // continuation index that coincides with the resumed main number — is
+    // broken by looking ahead: a real question carries its own options.
     const q = matchQuestion(text);
     if (q) {
-      commit();
-      cur = {
-        number: q.number,
-        stemLines: q.rest ? [q.rest] : [],
-        options: [],
-        inlineAnswer: null,
-        explanationLines: [],
-        mode: "stem",
-        mcqSection: sectionIsMcq,
-      };
-      continue;
+      const n = q.number;
+      let startNew: boolean;
+      if (lastQ === null) {
+        startNew = true; // first question in the doc / section
+      } else if (enumNext !== null && n === enumNext) {
+        // Continues an anchored sub-enumeration — unless this line has its own
+        // options, which makes it a real (resumed) question instead.
+        startNew = hasOwnOptions(doc.lines, li, q.rest);
+      } else if (n <= lastQ) {
+        startNew = false; // numbering reset → anchor a sub-enumeration
+      } else {
+        startNew = true; // advances the main sequence → genuine new question
+      }
+
+      if (startNew) {
+        commit();
+        cur = {
+          number: n,
+          stemLines: q.rest ? [q.rest] : [],
+          options: [],
+          inlineAnswer: null,
+          inlineAnswers: null,
+          openAnswer: null,
+          explanationLines: [],
+          mode: "stem",
+          mcqSection: sectionIsMcq,
+        };
+        lastQ = n;
+        enumNext = null;
+        continue;
+      }
+
+      // Absorbed as a sub-enumeration item: advance the expected index and let
+      // the full line (marker included) fall through to stem continuation.
+      enumNext = n + 1;
     }
 
     if (!cur) continue; // preamble before the first question
 
-    // Standalone answer tag.
+    // Standalone answer tag — a bare option letter ("Answer: B") for MCQs, a
+    // multi-letter set ("Answers: B, D") for "select all that apply" MCQs, or
+    // free text ("Answer: Mitochondria") for short-answer items. Multi-letter is
+    // tried first (it requires >=2 letters, so it never steals a single-letter
+    // tag); the single-letter form next; only a multi-character word answer falls
+    // through to free text.
+    const multiTag = matchMultiAnswerTag(text);
+    if (multiTag) {
+      cur.inlineAnswers = multiTag;
+      continue;
+    }
     const tag = matchAnswerTag(text);
     if (tag) {
       cur.inlineAnswer = tag;
+      continue;
+    }
+    const tagText = matchAnswerTagText(text);
+    if (tagText) {
+      cur.openAnswer = tagText;
       continue;
     }
 
@@ -172,20 +253,86 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
   //  - simply has <2 options (short-answer prompts, stray numbering).
   // We only surface a skipped draft that carries real content (a stem or at
   // least one option), so bare/stray numbering never becomes review noise.
-  const mcq: Draft[] = [];
+  type Kept =
+    | { d: Draft; kind: "mcq" }
+    | { d: Draft; kind: "tf"; statement: string; correct: "True" | "False"; marks: number | null }
+    | { d: Draft; kind: "open"; answer: string; marks: number | null }
+    | { d: Draft; kind: "cloze"; answer: string; marks: number | null };
+  const kept: Kept[] = [];
   const skipped: SkippedItem[] = [];
   for (const d of drafts) {
+    // Multi-part structured question (parts carry mark allocations) — split into
+    // per-part review items rather than mis-importing the parts as MCQ options.
+    if (isMultiPart(d)) {
+      skipped.push(...expandMultiPart(d));
+      continue;
+    }
     if (d.mcqSection && d.options.length >= 2) {
-      mcq.push(d);
-    } else if (d.stemLines.some((l) => l.trim()) || d.options.length >= 1) {
-      skipped.push(toSkipped(d));
+      kept.push({ d, kind: "mcq" });
+      continue;
+    }
+    const hasStem = d.stemLines.some((l) => l.trim());
+    const { text: cleanedStem, marks: stemMarks } = parseMarkAllocation(
+      repairGluedWords(d.stemLines.join(" ").replace(/\s+/g, " ").trim()),
+    );
+
+    // A True/False prompt ("True or False: <statement>") with no options of its
+    // own. Modeled as a two-option question (A = True, B = False) so it plays,
+    // edits, and grades through the existing MCQ paths. The verdict is read from
+    // the same signals an MCQ answer comes from — inline tag, answer key, or a
+    // free-text key — where it may be a letter ("F") or a word ("False").
+    // Without a resolvable verdict it falls through (open / skipped) unchanged.
+    if (d.options.length < 2) {
+      const statement = matchTrueFalseLead(cleanedStem);
+      if (statement && /[A-Za-z]/.test(statement)) {
+        const verdict = normalizeTrueFalse(
+          d.openAnswer ?? d.inlineAnswer ?? answerKeyText.get(d.number) ?? keyMap.get(d.number),
+        );
+        if (verdict) {
+          kept.push({ d, kind: "tf", statement, correct: verdict, marks: stemMarks });
+          continue;
+        }
+      }
+    }
+
+    // A self-graded prompt: a stem, too few options to be MCQ, and a reference
+    // answer we can reveal — found inline or via a short-answer key. A stem that
+    // carries a fill-in-the-blank gap ("… is the ______.") becomes a `cloze`, so
+    // the player can reveal the answer IN the blank; everything else is a plain
+    // short-answer ("open"). Without an answer it stays skipped (nothing to
+    // grade against), exactly as before.
+    if (hasStem && d.options.length < 2) {
+      const answer = d.openAnswer ?? answerKeyText.get(d.number) ?? null;
+      if (answer) {
+        kept.push({ d, kind: hasBlank(cleanedStem) ? "cloze" : "open", answer, marks: stemMarks });
+        continue;
+      }
+    }
+    if (hasStem || d.options.length >= 1) {
+      // Don't surface a block this tool fundamentally can't model as an MCQ — a
+      // fill-in-the-table prompt, or a multi-part problem graded by points
+      // ("A … (7 Points)  B … (3 Points)"). Identifying these here keeps the
+      // review screen from inviting the user to "Add as question" something there
+      // is no clean way to import; like the unsupported figure sections, it's
+      // dropped rather than exported.
+      const sk = toSkipped(d);
+      if (!isUnsupportedFreeResponse(sk.stem, sk.options)) skipped.push(sk);
     }
   }
 
-  const emphasisFont = detectEmphasisFont(mcq);
+  const emphasisFont = detectEmphasisFont(
+    kept.flatMap((k) => (k.kind === "mcq" ? [k.d] : [])),
+  );
 
-  // Index-based IDs guarantee uniqueness even when source numbers repeat.
-  const questions = mcq.map((d, i) => finalize(d, keyMap, i, emphasisFont));
+  // Index-based IDs guarantee uniqueness even when source numbers repeat. MCQ,
+  // True/False, short-answer, and fill-in-the-blank are finalized in doc order.
+  const questions = kept.map((k, i) =>
+    k.kind === "mcq"
+      ? finalize(k.d, keyMap, i, emphasisFont)
+      : k.kind === "tf"
+        ? finalizeTrueFalse(k.d, k.statement, k.correct, i, k.marks)
+        : finalizeOpen(k.d, k.answer, i, k.kind === "cloze" ? "cloze" : "open", k.marks),
+  );
 
   return {
     id: newQuizId(),
@@ -197,16 +344,83 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
   };
 }
 
+/**
+ * Look ahead from the numbered line at `idx` to decide whether it begins a real
+ * question (its own answer options follow) rather than a bare sub-enumeration
+ * item that merely shares the numbering space. Consulted ONLY for the ambiguous
+ * tie where a sub-list's next index coincides with the resumed main number.
+ * Scans just until the next question marker or section boundary, so it never
+ * borrows a later question's options. Options may be inline on the same line
+ * ("4. Which? A) x B) y") or on the lines that follow.
+ */
+function hasOwnOptions(lines: ExtractedDoc["lines"], idx: number, rest: string): boolean {
+  const inl = splitInlineOptions(rest);
+  if (inl && inl.length >= 2 && isSequential(inl.map((o) => o.label))) return true;
+  let count = 0;
+  for (let j = idx + 1; j < lines.length; j++) {
+    const t = lines[j].text;
+    if (!t.trim()) continue;
+    if (matchSectionHeader(t) || isAnswerKeyHeader(t) || matchQuestion(t)) break;
+    const inline = splitInlineOptions(t);
+    if (inline && inline.length >= 2 && isSequential(inline.map((o) => o.label))) return true;
+    if (matchOption(t) && ++count >= 2) return true;
+  }
+  return false;
+}
+
+const MULTIPART_REASON = "Multi-part question — add an answer or its mark scheme";
+
+/**
+ * A multi-part / "structured" exam question — a shared intro followed by parts
+ * "(a) … (b) …", each with its own marks and answer — is NOT a multiple-choice
+ * question, even though PDF extraction captures the parts as if they were the
+ * options "A) … B) …". We recognise it deterministically by the one signal that
+ * cleanly separates structured questions from MCQs: exam papers print a MARK
+ * ALLOCATION on the parts ("(a) … [3]"), which genuine MCQ options never carry.
+ * Conservative by design — without that signal a draft keeps its MCQ treatment,
+ * so ordinary multiple-choice parsing is untouched.
+ */
+function isMultiPart(d: Draft): boolean {
+  if (d.options.length < 1) return false;
+  const marked = d.options.filter((o) => parseMarkAllocation(o.text).marks != null).length;
+  if (marked >= 2) return true;
+  // A single marked part beneath a real intro stem is structured too.
+  return marked >= 1 && d.options.length === 1 && d.stemLines.some((l) => l.trim());
+}
+
+/**
+ * Split a detected multi-part draft into one review item per part, each carrying
+ * its part path ("a", "b") and marks. The shared intro is prepended so a part
+ * reads in context, and the part marker is restored ("(a) …"). Parts have no
+ * answer in a question-only paper, so they surface as `skipped` for review until
+ * a mark scheme (or the user) supplies answers — never as a bogus MCQ. The
+ * `part` field lets a later mark-scheme match promote a part to a real question.
+ */
+function expandMultiPart(d: Draft): SkippedItem[] {
+  const intro = cleanStem(d.stemLines).stem;
+  const out: SkippedItem[] = [];
+  for (const o of d.options) {
+    const part = o.label.toLowerCase();
+    // Strip mark allocations and repair glue; keep any nested "(i)/(ii)" inline
+    // (splitting nested roman sub-parts into their own items is a later refinement).
+    const { text, marks } = parseMarkAllocation(
+      repairGluedWords(o.text.replace(/\s+/g, " ").trim()),
+    );
+    if (!text.trim()) continue; // a bare "(a)" marker with no body is noise
+    const stem = (intro ? `${intro}\n\n(${part}) ${text}` : `(${part}) ${text}`).trim();
+    out.push({ number: d.number, part, marks, stem, options: [], reason: MULTIPART_REASON });
+  }
+  return out;
+}
+
 /** Turn a dropped draft into a review-surface `SkippedItem`, cleaning its text
  *  exactly as `finalize` would and labeling WHY it wasn't auto-imported. The
  *  non-MCQ-section reason takes priority since it's the most specific. */
 function toSkipped(d: Draft): SkippedItem {
-  const stem = splitEnumeratedStem(
-    repairGluedWords(d.stemLines.join(" ").replace(/\s+/g, " ").trim()),
-  );
+  const { stem } = cleanStem(d.stemLines);
   const options: QuestionOption[] = d.options.map((o) => ({
     label: o.label,
-    text: repairGluedWords(o.text.replace(/\s+/g, " ").trim()),
+    text: cleanOptionText(o.text),
   }));
   const reason = !d.mcqSection
     ? "Under a non-multiple-choice section"
@@ -214,6 +428,23 @@ function toSkipped(d: Draft): SkippedItem {
       ? "No answer options were detected"
       : "Only one answer option was detected";
   return { number: d.number, stem, options, reason };
+}
+
+/**
+ * Identify an exam free-response block this MCQ tool can't represent, so the
+ * review screen doesn't offer it for import. Two marks, either sufficient:
+ *   • a FILL-IN-THE-TABLE instruction ("Complete the table above") — a data grid
+ *     the user is meant to fill, which has no multiple-choice shape; or
+ *   • a MULTI-PART, points-graded structure ("A … (7 Points)  B … (3 Points)"),
+ *     detected by ≥2 "(N points)" allocations — an essay/worked-problem set.
+ * Scans the stem AND any sub-part text the parser captured as pseudo-options
+ * (the "A. … B. … C. …" parts often masquerade as options).
+ */
+function isUnsupportedFreeResponse(stem: string, options: QuestionOption[]): boolean {
+  const blob = `${stem} ${options.map((o) => o.text).join(" ")}`;
+  const tableFill = /\b(complete|fill\s+in|fill\s+out)\b[^.]{0,40}\btable\b/i.test(blob);
+  const pointParts = (blob.match(/\(\s*\d+\s*points?\s*\)/gi) ?? []).length;
+  return tableFill || pointParts >= 2;
 }
 
 /**
@@ -312,6 +543,23 @@ function detectEmphasisFont(drafts: Draft[]): string | null {
   return null;
 }
 
+/**
+ * Clean a draft's stem lines into display text plus any mark allocation: join →
+ * repair glued words → strip exam mark allocations ("(2 marks)", "[3]") as
+ * metadata → split a flattened roman enumeration onto its own lines.
+ */
+function cleanStem(stemLines: string[]): { stem: string; marks: number | null } {
+  const joined = repairGluedWords(stemLines.join(" ").replace(/\s+/g, " ").trim());
+  const { text, marks } = parseMarkAllocation(joined);
+  return { stem: splitEnumeratedStem(text), marks };
+}
+
+/** Clean option text like a stem (minus enumeration splitting): repair glued
+ *  words and strip any mark allocation so "(2 marks)" never clutters a choice. */
+function cleanOptionText(raw: string): string {
+  return parseMarkAllocation(repairGluedWords(raw.replace(/\s+/g, " ").trim())).text;
+}
+
 function finalize(
   d: Draft,
   keyMap: Map<number, string>,
@@ -320,30 +568,57 @@ function finalize(
 ): Question {
   const options: QuestionOption[] = d.options.map((o) => ({
     label: o.label,
-    text: repairGluedWords(o.text.replace(/\s+/g, " ").trim()),
+    text: cleanOptionText(o.text),
   }));
+  const { stem, marks } = cleanStem(d.stemLines);
 
-  // Answer signal priority: separate key > asterisk > tag line > emphasis font.
+  // Single-answer signal priority: separate key > asterisk > tag line > emphasis font.
   const fromKey = keyMap.get(d.number) ?? null;
-  const fromAsterisk = d.options.find((o) => o.correctByAsterisk)?.label ?? null;
-  let fromFont: string | null = null;
-  if (emphasisFont) {
-    const emphasized = d.options.filter((o) => o.font === emphasisFont);
-    if (emphasized.length === 1) fromFont = emphasized[0].label;
-  }
-  const correct = fromKey ?? fromAsterisk ?? d.inlineAnswer ?? fromFont ?? null;
+  const starred = d.options.filter((o) => o.correctByAsterisk).map((o) => o.label);
+  const fromAsterisk = starred[0] ?? null;
+  const emphasized = emphasisFont
+    ? d.options.filter((o) => o.font === emphasisFont).map((o) => o.label)
+    : [];
+  const fromFont = emphasized.length === 1 ? emphasized[0] : null;
+  const correctSingle = fromKey ?? fromAsterisk ?? d.inlineAnswer ?? fromFont ?? null;
+
+  // Multi-select ("select all that apply" / "choose two"): treat the question as
+  // multi-answer only when we have an unambiguous set of >=2 correct option
+  // labels. Signals, in priority order: an explicit multi-letter tag ("Answers:
+  // B, D"); two-or-more starred options; or — ONLY when the stem actually asks
+  // for several — two-or-more emphasis-font options. Never fires from a single
+  // signal, so ordinary single-answer MCQs are completely unaffected.
+  const hint = matchMultiSelect(stem);
+  const optionLabels = new Set(options.map((o) => o.label));
+  const asSet = (labels: string[]): string[] | null => {
+    const inOrder = options
+      .map((o) => o.label)
+      .filter((l) => labels.includes(l) && optionLabels.has(l));
+    return inOrder.length >= 2 ? inOrder : null;
+  };
+  const correctSet =
+    asSet(d.inlineAnswers ?? []) ?? asSet(starred) ?? (hint ? asSet(emphasized) : null);
+
+  const correct = correctSet ? correctSet[0] : correctSingle;
 
   const flags: string[] = [];
   const distinct = new Set(
     [fromKey, fromAsterisk, d.inlineAnswer, fromFont].filter(Boolean) as string[],
   );
-  if (distinct.size > 1) {
+  if (!correctSet && distinct.size > 1) {
     flags.push(`Conflicting answer signals (${[...distinct].join(" / ")}) — using ${correct}`);
   }
+  // The stem asks for multiple answers but we resolved fewer than two — surface
+  // it so the user can complete the key (checkboxes) in the editor rather than
+  // ship a single-answer key for a "select all" question.
+  if (hint && !correctSet) {
+    flags.push(
+      hint.count != null
+        ? `Stem asks to choose ${hint.count}, but only one answer was detected`
+        : "Stem says “select all that apply”, but only one answer was detected",
+    );
+  }
 
-  const stem = splitEnumeratedStem(
-    repairGluedWords(d.stemLines.join(" ").replace(/\s+/g, " ").trim()),
-  );
   const explanation = d.explanationLines.length
     ? repairGluedWords(d.explanationLines.join(" ").replace(/\s+/g, " ").trim())
     : null;
@@ -355,10 +630,78 @@ function finalize(
     stem,
     options,
     correct,
+    ...(correctSet ? { correctSet } : {}),
     explanation,
+    ...(marks != null ? { marks } : {}),
     flags,
   };
 
+  const scored = scoreQuestion(base);
+  return { ...base, confidence: scored.confidence, flags: scored.flags };
+}
+
+/** Finalize a True/False draft into a two-option question (A = True, B = False)
+ *  with the correct label set from the detected verdict. Modeling it as a 2-MCQ
+ *  lets the player render True/False choices and grade by label, and the editor
+ *  edit it, with no type-specific plumbing in either. `statement` is the stem
+ *  with the "True or False:" lead-in already stripped and glue-repaired. */
+function finalizeTrueFalse(
+  d: Draft,
+  statement: string,
+  correct: "True" | "False",
+  index: number,
+  marks: number | null,
+): Question {
+  const stem = splitEnumeratedStem(statement);
+  const explanation = d.explanationLines.length
+    ? repairGluedWords(d.explanationLines.join(" ").replace(/\s+/g, " ").trim())
+    : null;
+  const base: Omit<Question, "confidence"> = {
+    id: newQuestionId(index + 1),
+    number: d.number,
+    type: "true_false",
+    stem,
+    options: [
+      { label: "A", text: "True" },
+      { label: "B", text: "False" },
+    ],
+    correct: correct === "True" ? "A" : "B",
+    explanation,
+    ...(marks != null ? { marks } : {}),
+    flags: [],
+  };
+  const scored = scoreQuestion(base);
+  return { ...base, confidence: scored.confidence, flags: scored.flags };
+}
+
+/** Finalize a self-graded draft: no options, no labelled correct — just the
+ *  verbatim stem and a reference answer the player reveals for self-grading.
+ *  Cleaned exactly like an MCQ stem. `type` distinguishes a plain short-answer
+ *  ("open") from a fill-in-the-blank ("cloze") whose stem keeps its blank so the
+ *  player can reveal the answer inside it. */
+function finalizeOpen(
+  d: Draft,
+  answer: string,
+  index: number,
+  type: "open" | "cloze",
+  marks: number | null,
+): Question {
+  const { stem } = cleanStem(d.stemLines);
+  const explanation = d.explanationLines.length
+    ? repairGluedWords(d.explanationLines.join(" ").replace(/\s+/g, " ").trim())
+    : null;
+  const base: Omit<Question, "confidence"> = {
+    id: newQuestionId(index + 1),
+    number: d.number,
+    type,
+    stem,
+    options: [],
+    correct: null,
+    answerText: repairGluedWords(answer.replace(/\s+/g, " ").trim()),
+    explanation,
+    ...(marks != null ? { marks } : {}),
+    flags: [],
+  };
   const scored = scoreQuestion(base);
   return { ...base, confidence: scored.confidence, flags: scored.flags };
 }

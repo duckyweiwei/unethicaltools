@@ -8,3 +8,214 @@ html,
 body {
   height: 100%;
 }
+
+/* ---------------------------------------------------------------------------
+   Landing "how it works" animations. The home page is a server component, so
+   there's no JS to drive these — entrance animations play once on load, and the
+   little in-tile demos loop so the strip stays alive. Honoured-with-restraint:
+   prefers-reduced-motion switches them all off and leaves a sensible static
+   state.
+   --------------------------------------------------------------------------- */
+@keyframes how-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes how-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+@keyframes how-scan {
+  0% {
+    transform: translateY(-130%);
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(430%);
+    opacity: 0;
+  }
+}
+@keyframes how-pop {
+  0%,
+  58% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  72% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes how-fill {
+  0%,
+  38% {
+    background-color: rgb(250 250 250);
+    color: rgb(115 115 115);
+  }
+  52%,
+  100% {
+    background-color: rgb(23 23 23);
+    color: rgb(255 255 255);
+  }
+}
+@keyframes how-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(23, 23, 23, 0.16);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(23, 23, 23, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(23, 23, 23, 0);
+  }
+}
+
+.how-step {
+  animation: how-rise 0.6s ease-out both;
+}
+.how-bob {
+  animation: how-bob 2.4s ease-in-out infinite;
+}
+.how-scan {
+  animation: how-scan 2.8s ease-in-out infinite;
+}
+.how-pop {
+  animation: how-pop 2.8s ease-in-out infinite;
+}
+.how-fill {
+  animation: how-fill 3s ease-in-out infinite;
+}
+.how-pulse {
+  animation: how-pulse 2.2s ease-out infinite;
+}
+
+/* ---------------------------------------------------------------------------
+   Library motion — a gentle entrance for quiz cards, and a settle "pop" on a
+   folder the instant a quiz lands in it. The drag-lift and drop-target
+   highlight are state-driven Tailwind transforms; these are the two keyframe
+   pieces. `card-in` uses fill-mode: backwards so the entrance plays during its
+   delay but RELEASES afterward — otherwise a held final frame would pin the
+   card's transform and fight the drag-lift utility classes.
+   --------------------------------------------------------------------------- */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drop-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.card-in {
+  animation: card-in 0.45s ease-out backwards;
+}
+.drop-pop {
+  animation: drop-pop 0.4s ease-out;
+}
+
+/* ---------------------------------------------------------------------------
+   Exam marquee — an infinite, seamless horizontal scroll of exam-type pills on
+   the home page. The track holds the list duplicated back-to-back and slides by
+   exactly one copy (-50% of its own width), so the wrap is invisible. Each pill
+   carries its own trailing margin (no flex gap), which keeps the spacing across
+   the copy boundary identical to the internal spacing — the condition for a
+   jump-free loop regardless of how wide each pill is. The edge mask fades pills
+   in/out at the sides; hovering pauses; reduced-motion freezes it.
+   --------------------------------------------------------------------------- */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee-track {
+  animation: marquee 40s linear infinite;
+}
+.marquee-mask:hover .marquee-track {
+  animation-play-state: paused;
+}
+.marquee-mask {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 7%,
+    #000 93%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 7%,
+    #000 93%,
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .how-step,
+  .how-bob,
+  .how-scan,
+  .how-pop,
+  .how-fill,
+  .how-pulse,
+  .card-in,
+  .drop-pop,
+  .marquee-track {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Printing / "Save as PDF". Strip the site chrome (top bar, side rail, footer)
+   and anything tagged `.no-print` so a printed page is just its content — used
+   by the study guide's Print button, and a sensible default site-wide. Elements
+   that should keep their colour ink (tone chips, accuracy bars) opt in with
+   `.print-exact`.
+   --------------------------------------------------------------------------- */
+@media print {
+  header,
+  aside,
+  footer,
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+  }
+  .print-exact {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

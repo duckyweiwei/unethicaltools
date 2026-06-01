@@ -1,7 +1,10 @@
 import type { Quiz } from "../../domain/types";
 import type { Importer } from "../types";
 import { extractPdf, PdfTooLargeError } from "./extract";
-import { extractAnswerKeyPairs, parseExtracted } from "./parser";
+import { extractPdfFigures, type ExtractedImage } from "./images";
+import { attachFigures } from "./attach";
+import { extractAnswerKeyPairs, parseExtracted, parseMarkScheme } from "./parser";
+import type { MarkSchemeEntry } from "./parser";
 import type { KeyPair } from "./parser/patterns";
 
 export interface PdfSource {
@@ -14,8 +17,17 @@ export interface PdfParseResult {
   quiz: Quiz;
   /** Any number→letter pairs found, so a key-only PDF can be merged later. */
   answerKey: KeyPair[];
+  /**
+   * Per-(number, part) reference answers found, so a mark-scheme PDF (uploaded
+   * alongside its question paper) can be reconciled onto the right questions and
+   * multi-part parts at merge time. Liberal — populated for any numbered-answer
+   * doc; only applied when the user classifies a doc as a mark scheme.
+   */
+  markScheme: MarkSchemeEntry[];
   /** Page count, for the upload UI and the page-cap guard. */
   pages: number;
+  /** Figures pulled from the PDF (best-effort), for the review tray to attach. */
+  images: ExtractedImage[];
 }
 
 /**
@@ -28,10 +40,19 @@ export async function parsePdf(
   source: PdfSource,
   opts?: { maxPages?: number },
 ): Promise<PdfParseResult> {
+  // Copy the bytes up front: pdf.js can detach the buffer it's handed during
+  // text extraction, which would leave nothing for the image pass to read.
+  const imageBytes = Uint8Array.from(source.data);
   const doc = await extractPdf(source.data, { maxPages: opts?.maxPages });
   const quiz = parseExtracted(doc, { type: "pdf", filename: source.filename });
   const answerKey = extractAnswerKeyPairs(doc);
-  return { quiz, answerKey, pages: doc.pages };
+  const markScheme = parseMarkScheme(doc);
+  // Best-effort and isolated: a failure here must never sink a good text parse.
+  // Extract figures (with page boxes), then match them to questions by caption
+  // and position so the client can auto-attach the confident ones.
+  const figures = await extractPdfFigures(imageBytes, doc.pages).catch(() => []);
+  const images = figures.length ? attachFigures(figures, quiz, doc) : [];
+  return { quiz, answerKey, markScheme, pages: doc.pages, images };
 }
 
 export { PdfTooLargeError };

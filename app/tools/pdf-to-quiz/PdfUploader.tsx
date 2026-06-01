@@ -2,18 +2,38 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Quiz } from "@/lib/domain/types";
-import { type AnswerKeyEntry, mergeQuizzes } from "@/lib/importers/merge";
+import type { Quiz, Question } from "@/lib/domain/types";
+import { newImageId } from "@/lib/domain/ids";
+import { type AnswerKeyEntry, type MarkSchemeEntry, mergeQuizzes } from "@/lib/importers/merge";
+import { putImage, writeTray, type TrayImage } from "@/lib/storage/image-store";
+// Type-only: the runtime module pulls in unpdf/node:zlib and must never reach
+// the client bundle. `import type` is erased at compile time, so this is safe.
+import type { ExtractedImage } from "@/lib/importers/pdf/images";
 import { Alert, Check, Cloud, Close } from "@/components/quiz-editor/icons";
 
 const MAX_FILES = 8;
 const MAX_MB = 4;
 const MAX_BYTES = MAX_MB * 1024 * 1024;
 
+// Cap how many auto-extracted figures we carry into the review tray across the
+// whole staged set — bounds the IndexedDB writes and keeps the tray scannable.
+const MAX_TRAY_IMAGES = 24;
+
+// The status icon already spins immediately, so we hold the per-file progress
+// bar back until a parse has run long enough to be worth showing. Quick parses
+// finish before this and never flash a bar; slower ones reveal live progress.
+const BAR_DELAY_MS = 1200;
+
 const STAGE_UPLOAD = "Uploading…";
 const STAGE_READ = "Reading & finding questions…";
 
-type DocType = "questions" | "answerKey";
+type DocType = "questions" | "answerKey" | "markScheme";
+
+const TYPE_LABEL: Record<DocType, string> = {
+  questions: "Questions",
+  answerKey: "Answer key",
+  markScheme: "Mark scheme",
+};
 
 interface StagedDoc {
   uid: string;
@@ -22,14 +42,22 @@ interface StagedDoc {
   status: "parsing" | "ready" | "error";
   progress: number;
   stage: string;
-  /** Effective classification (user can flip when a doc has both). */
+  /** Gates the progress bar: true only after BAR_DELAY_MS of parsing. */
+  showBar: boolean;
+  /** Effective classification (user can flip when a doc looks like more than one). */
   type: DocType | null;
   hasQuestions: boolean;
   hasKey: boolean;
+  /** A mark-scheme candidate: numbered answer rows and not itself a question paper. */
+  hasMarkScheme: boolean;
   quiz: Quiz | null;
   answerKey: AnswerKeyEntry[];
+  markScheme: MarkSchemeEntry[];
+  /** Figures the server pulled from this PDF, offered later in the review tray. */
+  images: ExtractedImage[];
   questionCount: number;
   keyCount: number;
+  markSchemeCount: number;
   pages: number;
   error: string | null;
 }
@@ -37,7 +65,9 @@ interface StagedDoc {
 interface ParseResponse {
   quiz?: Quiz;
   answerKey?: AnswerKeyEntry[];
+  markScheme?: MarkSchemeEntry[];
   pages?: number;
+  images?: ExtractedImage[];
   error?: string;
 }
 
@@ -47,6 +77,20 @@ const plural = (n: number) => (n === 1 ? "" : "s");
 function mbLabel(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   return mb < 0.1 ? "<0.1" : mb.toFixed(1);
+}
+
+/**
+ * The classifications a parsed doc could plausibly be, so the row only offers a
+ * toggle when there's a real choice (otherwise a static pill). A question paper
+ * is never offered as a mark scheme — its numbered lines are questions, not
+ * answers — but a numbered-answer doc can be either an answer key or a scheme.
+ */
+function candidatesFor(d: StagedDoc): DocType[] {
+  const c: DocType[] = [];
+  if (d.hasQuestions) c.push("questions");
+  if (d.hasKey) c.push("answerKey");
+  if (d.hasMarkScheme) c.push("markScheme");
+  return c.length ? c : [d.type ?? "answerKey"];
 }
 
 /**
@@ -60,6 +104,7 @@ export function PdfUploader() {
   const inputRef = useRef<HTMLInputElement>(null);
   const docsRef = useRef<StagedDoc[]>([]);
   const tricklesRef = useRef<Map<string, number>>(new Map());
+  const barTimersRef = useRef<Map<string, number>>(new Map());
 
   const [docs, setDocs] = useState<StagedDoc[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -75,6 +120,8 @@ export function PdfUploader() {
     () => () => {
       tricklesRef.current.forEach((id) => clearInterval(id));
       tricklesRef.current.clear();
+      barTimersRef.current.forEach((id) => clearTimeout(id));
+      barTimersRef.current.clear();
     },
     [],
   );
@@ -87,6 +134,14 @@ export function PdfUploader() {
     if (id != null) {
       clearInterval(id);
       tricklesRef.current.delete(uid);
+    }
+  }
+
+  function clearBarTimer(uid: string) {
+    const id = barTimersRef.current.get(uid);
+    if (id != null) {
+      clearTimeout(id);
+      barTimersRef.current.delete(uid);
     }
   }
 
@@ -114,13 +169,18 @@ export function PdfUploader() {
       status,
       progress: status === "parsing" ? 6 : 0,
       stage: STAGE_UPLOAD,
+      showBar: false,
       type: null,
       hasQuestions: false,
       hasKey: false,
+      hasMarkScheme: false,
       quiz: null,
       answerKey: [],
+      markScheme: [],
+      images: [],
       questionCount: 0,
       keyCount: 0,
+      markSchemeCount: 0,
       pages: 0,
       error,
     };
@@ -131,6 +191,15 @@ export function PdfUploader() {
     xhr.open("POST", "/api/parse-pdf");
     xhr.responseType = "json";
     let handedOff = false;
+
+    // Reveal the progress bar only if this parse outlives BAR_DELAY_MS.
+    const barTimer = window.setTimeout(() => {
+      barTimersRef.current.delete(uid);
+      setDocs((ds) =>
+        ds.map((d) => (d.uid === uid && d.status === "parsing" ? { ...d, showBar: true } : d)),
+      );
+    }, BAR_DELAY_MS);
+    barTimersRef.current.set(uid, barTimer);
 
     // Real upload bytes drive the first 40%.
     xhr.upload.onprogress = (e) => {
@@ -146,6 +215,7 @@ export function PdfUploader() {
     };
     xhr.onload = () => {
       stopTrickle(uid);
+      clearBarTimer(uid);
       const ok = xhr.status >= 200 && xhr.status < 300;
       const json = (xhr.response ?? {}) as ParseResponse;
       if (!ok || !json.quiz) {
@@ -154,22 +224,34 @@ export function PdfUploader() {
       }
       const questionCount = json.quiz.questions.length;
       const keyCount = json.answerKey?.length ?? 0;
+      const markSchemeCount = json.markScheme?.length ?? 0;
+      // A mark scheme is a numbered-answer doc that ISN'T a question paper — its
+      // numbered lines are answers, not questions. Auto-pick: questions first,
+      // then a clean letter key (conservative), then a scheme. The user can flip.
+      const hasQuestions = questionCount >= 1;
+      const hasKey = keyCount >= 1;
+      const hasMarkScheme = markSchemeCount >= 1 && !hasQuestions;
       patch(uid, {
         status: "ready",
         progress: 100,
         stage: "",
-        type: questionCount >= 1 ? "questions" : "answerKey",
-        hasQuestions: questionCount >= 1,
-        hasKey: keyCount >= 1,
+        type: hasQuestions ? "questions" : hasKey ? "answerKey" : hasMarkScheme ? "markScheme" : "answerKey",
+        hasQuestions,
+        hasKey,
+        hasMarkScheme,
         quiz: json.quiz,
         answerKey: json.answerKey ?? [],
+        markScheme: json.markScheme ?? [],
+        images: json.images ?? [],
         questionCount,
         keyCount,
+        markSchemeCount,
         pages: json.pages ?? 0,
       });
     };
     xhr.onerror = () => {
       stopTrickle(uid);
+      clearBarTimer(uid);
       patch(uid, { status: "error", error: "Network error — check your connection and try again.", progress: 0 });
     };
 
@@ -220,6 +302,7 @@ export function PdfUploader() {
 
   function removeDoc(uid: string) {
     stopTrickle(uid);
+    clearBarTimer(uid);
     setDocs((ds) => ds.filter((d) => d.uid !== uid));
   }
 
@@ -227,7 +310,64 @@ export function PdfUploader() {
     patch(uid, { type });
   }
 
-  function createQuiz() {
+  // Land the figures the server pulled from the question PDFs. Each figure now
+  // carries `attachToIds` — the questions it belongs to, decided deterministically
+  // server-side from captions + stem references + position. Those get auto-attached
+  // straight onto the merged quiz; anything we couldn't place confidently falls
+  // back to the manual review tray. Bytes go to IndexedDB under fresh ids; the
+  // quiz/tray hold only references. Best-effort and bounded: a storage failure or
+  // an absurd image count must never block quiz creation, so each write is caught.
+  async function stashFigures(merged: Quiz, ready: StagedDoc[]) {
+    const trayRefs: TrayImage[] = [];
+    let trayCount = 0;
+
+    for (const d of ready) {
+      if (d.type !== "questions" || !d.quiz) continue;
+
+      // The merge preserves each doc's question order and stamps
+      // sourceLabel === fileName, so zip this doc's ORIGINAL questions to their
+      // merged counterparts by index. Original ids are index-based and collide
+      // across docs ("q_001" in every file), so resolve them per-doc, never globally.
+      const mergedSlice = merged.questions.filter((q) => q.sourceLabel === d.fileName);
+      const byOriginalId = new Map<string, Question>();
+      d.quiz.questions.forEach((q, k) => {
+        if (mergedSlice[k]) byOriginalId.set(q.id, mergedSlice[k]);
+      });
+
+      for (const im of d.images) {
+        if (im.attachToIds.length) {
+          // Auto-attach. Give every target question its OWN copy of the bytes so
+          // removing the image from one question can't strip it from the others.
+          for (const targetId of im.attachToIds) {
+            const mq = byOriginalId.get(targetId);
+            if (!mq) continue;
+            const id = newImageId();
+            try {
+              await putImage(id, im.dataUrl);
+              mq.image = { id, alt: "", width: im.width, height: im.height };
+            } catch {
+              // IndexedDB unavailable / quota — skip this attach, keep the rest.
+            }
+          }
+        } else if (trayCount < MAX_TRAY_IMAGES) {
+          // Couldn't place it confidently — offer it in the manual review tray.
+          const id = newImageId();
+          try {
+            await putImage(id, im.dataUrl);
+            trayRefs.push({ id, page: im.page, sourceLabel: d.fileName, width: im.width, height: im.height });
+            trayCount += 1;
+          } catch {
+            // IndexedDB unavailable / quota — skip this figure, keep the rest.
+          }
+        }
+      }
+    }
+
+    writeTray(merged.id, trayRefs); // empty refs clears any stale tray from a prior import
+  }
+
+  async function createQuiz() {
+    if (creating) return;
     const ready = docsRef.current.filter((d) => d.status === "ready");
     const questionDocs = ready
       .filter((d) => d.type === "questions" && d.quiz)
@@ -237,9 +377,14 @@ export function PdfUploader() {
       return;
     }
     const answerKeys = ready.filter((d) => d.type === "answerKey").flatMap((d) => d.answerKey);
-    const merged = mergeQuizzes({ questionDocs, answerKeys });
+    const markScheme = ready.filter((d) => d.type === "markScheme").flatMap((d) => d.markScheme);
+    const merged = mergeQuizzes({ questionDocs, answerKeys, markScheme });
 
     setCreating(true);
+    // Attach figures FIRST — stashFigures mutates merged.questions[].image by
+    // reference, so the snapshot we persist below already carries the auto-attached
+    // images (and leaves a tray manifest for anything unplaced).
+    await stashFigures(merged, ready);
     sessionStorage.setItem("pdfquiz:current", JSON.stringify(merged));
     // Let the button state paint before routing away.
     window.setTimeout(() => router.push("/tools/pdf-to-quiz/review"), 150);
@@ -248,6 +393,7 @@ export function PdfUploader() {
   const anyParsing = docs.some((d) => d.status === "parsing");
   const questionDocsReady = docs.filter((d) => d.status === "ready" && d.type === "questions");
   const keyDocsReady = docs.filter((d) => d.status === "ready" && d.type === "answerKey");
+  const schemeDocsReady = docs.filter((d) => d.status === "ready" && d.type === "markScheme");
   const totalQuestions = questionDocsReady.reduce((n, d) => n + d.questionCount, 0);
   const canCreate = questionDocsReady.length > 0 && !anyParsing && !creating;
 
@@ -257,7 +403,9 @@ export function PdfUploader() {
       ? "Add a PDF with questions to continue."
       : `${questionDocsReady.length} PDF${plural(questionDocsReady.length)} · ${totalQuestions} question${plural(
           totalQuestions,
-        )}${keyDocsReady.length ? ` · ${keyDocsReady.length} answer key${plural(keyDocsReady.length)}` : ""}`;
+        )}${keyDocsReady.length ? ` · ${keyDocsReady.length} answer key${plural(keyDocsReady.length)}` : ""}${
+          schemeDocsReady.length ? ` · ${schemeDocsReady.length} mark scheme${plural(schemeDocsReady.length)}` : ""
+        }`;
 
   return (
     <div className="flex flex-col gap-3">
@@ -284,11 +432,11 @@ export function PdfUploader() {
           addFiles(e.dataTransfer.files);
         }}
         className={[
-          "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed bg-white text-center transition",
+          "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed text-center transition",
           docs.length ? "px-6 py-6" : "px-6 py-14",
           dragOver
             ? "border-neutral-900 bg-neutral-50"
-            : "border-neutral-300 hover:border-neutral-400 hover:bg-neutral-50",
+            : "border-neutral-300 bg-white hover:border-neutral-400 hover:bg-neutral-50",
         ].join(" ")}
       >
         {docs.length ? (
@@ -305,7 +453,7 @@ export function PdfUploader() {
               Drag PDFs here, or <span className="underline">browse</span>
             </span>
             <span className="text-xs text-neutral-400">
-              Questions and/or a separate answer key · up to {MAX_FILES} files, ~{MAX_MB} MB &amp; 50 pages each
+              Questions, plus an answer key or mark scheme · up to {MAX_FILES} files, ~{MAX_MB} MB &amp; 50 pages each
             </span>
           </>
         )}
@@ -347,7 +495,7 @@ export function PdfUploader() {
                   </button>
                 </div>
 
-                {d.status === "parsing" && (
+                {d.status === "parsing" && d.showBar && (
                   <>
                     <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-neutral-200">
                       <div
@@ -361,49 +509,47 @@ export function PdfUploader() {
 
                 {d.status === "error" && <span className="mt-1 block text-xs text-rose-600">{d.error}</span>}
 
-                {d.status === "ready" && (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-neutral-400">
-                    {d.hasQuestions && d.hasKey ? (
-                      <span className="inline-flex overflow-hidden rounded-md border border-neutral-200">
-                        <button
-                          type="button"
-                          onClick={() => setType(d.uid, "questions")}
-                          className={
-                            d.type === "questions"
-                              ? "bg-neutral-900 px-2 py-0.5 text-xs font-medium text-white"
-                              : "bg-white px-2 py-0.5 text-xs text-neutral-500 transition hover:bg-neutral-50"
-                          }
-                        >
-                          Questions
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setType(d.uid, "answerKey")}
-                          className={
-                            d.type === "answerKey"
-                              ? "bg-neutral-900 px-2 py-0.5 text-xs font-medium text-white"
-                              : "bg-white px-2 py-0.5 text-xs text-neutral-500 transition hover:bg-neutral-50"
-                          }
-                        >
-                          Answer key
-                        </button>
+                {d.status === "ready" && (() => {
+                  const cands = candidatesFor(d);
+                  const activeType = d.type ?? cands[0];
+                  return (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-neutral-400">
+                      {cands.length > 1 ? (
+                        <span className="inline-flex overflow-hidden rounded-md border border-neutral-200">
+                          {cands.map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => setType(d.uid, t)}
+                              className={
+                                activeType === t
+                                  ? "bg-neutral-900 px-2 py-0.5 text-xs font-medium text-white"
+                                  : "bg-white px-2 py-0.5 text-xs text-neutral-500 transition hover:bg-neutral-50"
+                              }
+                            >
+                              {TYPE_LABEL[t]}
+                            </button>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-md bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                          {TYPE_LABEL[activeType]}
+                        </span>
+                      )}
+                      <span>
+                        {activeType === "questions"
+                          ? `${d.questionCount} question${plural(d.questionCount)}`
+                          : activeType === "markScheme"
+                            ? `${d.markSchemeCount} answer${plural(d.markSchemeCount)}`
+                            : `${d.keyCount} answer${plural(d.keyCount)}`}
                       </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-md bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
-                        {d.type === "questions" ? "Questions" : "Answer key"}
+                      <span aria-hidden>·</span>
+                      <span>
+                        {d.pages} pg · {d.sizeLabel} MB
                       </span>
-                    )}
-                    <span>
-                      {d.type === "questions"
-                        ? `${d.questionCount} question${plural(d.questionCount)}`
-                        : `${d.keyCount} answer${plural(d.keyCount)}`}
-                    </span>
-                    <span aria-hidden>·</span>
-                    <span>
-                      {d.pages} pg · {d.sizeLabel} MB
-                    </span>
-                  </div>
-                )}
+                    </div>
+                  );
+                })()}
               </div>
             </li>
           ))}

@@ -1,4 +1,5 @@
 import type { Question, QuestionOption } from "../domain/types";
+import { isMultiSelect } from "../domain/types";
 
 /**
  * One-time "fresh numbers" study transform.
@@ -90,6 +91,9 @@ interface Analysis {
  */
 function analyze(q: Question): Analysis | null {
   if (q.correct == null) return null;
+  // A "select all that apply" arithmetic item has no single numeric answer to
+  // verify against, so the fresh-numbers transform never applies to one.
+  if (isMultiSelect(q)) return null;
   const correctIdx = q.options.findIndex((o) => o.label === q.correct);
   if (correctIdx < 0) return null;
 

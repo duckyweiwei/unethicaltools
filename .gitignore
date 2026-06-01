@@ -16,3 +16,6 @@ samples
 # Next.js / TS generated
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# Local agent/editor config (not part of the app)
+.claude/

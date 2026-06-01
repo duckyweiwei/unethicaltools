@@ -1,4 +1,5 @@
 import type { Question } from "../../../domain/types";
+import { isMultiSelect, usesAnswerText } from "../../../domain/types";
 import { isSequential } from "./patterns";
 
 /**
@@ -14,6 +15,7 @@ export const DERIVED_FLAGS = {
   noAnswer: "No correct answer detected",
   answerNotOption: "Answer label is not among the options",
   notSequential: "Option labels are not sequential (A, B, C...)",
+  noReferenceAnswer: "No reference answer set",
 } as const;
 
 export const DERIVED_FLAG_SET: ReadonlySet<string> = new Set(Object.values(DERIVED_FLAGS));
@@ -29,6 +31,25 @@ export function scoreQuestion(q: Omit<Question, "confidence">): {
 } {
   const flags = [...q.flags];
   let score = 1;
+
+  // Self-graded questions (short-answer "open" and fill-in-the-blank "cloze")
+  // have no options and no labelled answer; they are scored on the presence of a
+  // stem and a reference answer instead, so the MCQ-shaped penalties below never
+  // apply.
+  if (usesAnswerText(q)) {
+    if (!q.stem.trim()) {
+      score -= 0.5;
+      flags.push(DERIVED_FLAGS.emptyStem);
+    }
+    if (!q.answerText || !q.answerText.trim()) {
+      score -= 0.4;
+      flags.push(DERIVED_FLAGS.noReferenceAnswer);
+    }
+    return {
+      confidence: Math.max(0, Math.min(1, Number(score.toFixed(2)))),
+      flags,
+    };
+  }
 
   if (q.options.length < 2) {
     score -= 0.5;
@@ -48,6 +69,19 @@ export function scoreQuestion(q: Omit<Question, "confidence">): {
   } else if (!q.options.some((o) => o.label === q.correct)) {
     score -= 0.3;
     flags.push(DERIVED_FLAGS.answerNotOption);
+  }
+
+  // Multi-select: every label in the correct set must be a real option. The
+  // single-answer check above already covers `correct` (= the set's first
+  // label), so only penalise here when one of the OTHER set labels is bogus and
+  // we haven't already flagged it.
+  if (isMultiSelect(q)) {
+    const labels = new Set(q.options.map((o) => o.label));
+    const allValid = (q.correctSet ?? []).every((l) => labels.has(l));
+    if (!allValid && !flags.includes(DERIVED_FLAGS.answerNotOption)) {
+      score -= 0.3;
+      flags.push(DERIVED_FLAGS.answerNotOption);
+    }
   }
 
   const labels = q.options.map((o) => o.label);

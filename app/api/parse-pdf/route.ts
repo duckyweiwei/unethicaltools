@@ -10,6 +10,11 @@ export const maxDuration = 30;
 // ~4.5 MB request-body limit.
 const MAX_PAGES = 50;
 
+// Hard ceiling on upload size. Vercel rejects request bodies past ~4.5 MB at the
+// edge before this handler ever runs; this explicit guard is the backstop for
+// self-hosting and keeps the expensive parser from touching an absurd input.
+const MAX_BYTES = 6 * 1024 * 1024;
+
 /**
  * Parse one uploaded PDF, server-side. Returns the parsed quiz, any standalone
  * answer-key pairs, and the page count — enough for the client to tell a
@@ -35,10 +40,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Please upload a PDF file." }, { status: 415 });
   }
 
+  if (file.size === 0) {
+    return NextResponse.json({ error: "This file is empty." }, { status: 400 });
+  }
+  if (file.size > MAX_BYTES) {
+    return NextResponse.json(
+      { error: "This PDF is too large. Please upload a file under 6 MB." },
+      { status: 413 },
+    );
+  }
+
   const data = new Uint8Array(await file.arrayBuffer());
 
+  // Magic-byte guard: a real PDF carries "%PDF-" within its first kilobyte (the
+  // spec tolerates leading junk before the header). A matching extension or MIME
+  // type is trivially spoofed, so confirm the actual bytes before parsing.
+  const header = new TextDecoder("latin1").decode(data.subarray(0, 1024));
+  if (!header.includes("%PDF-")) {
+    return NextResponse.json({ error: "This file isn't a valid PDF." }, { status: 415 });
+  }
+
   try {
-    const { quiz, answerKey, pages } = await parsePdf(
+    const { quiz, answerKey, markScheme, pages, images } = await parsePdf(
       { data, filename: file.name },
       { maxPages: MAX_PAGES },
     );
@@ -52,7 +75,7 @@ export async function POST(req: Request) {
         { status: 422 },
       );
     }
-    return NextResponse.json({ quiz, answerKey, pages });
+    return NextResponse.json({ quiz, answerKey, markScheme, pages, images });
   } catch (err) {
     if (err instanceof PdfTooLargeError) {
       return NextResponse.json(
