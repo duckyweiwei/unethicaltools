@@ -26,6 +26,21 @@ import type { Quiz } from "../../domain/types";
 import type { ExtractedDoc } from "./extract";
 import type { ExtractedImage, Figure } from "./images";
 
+/**
+ * A region the SERVER asks the client to rasterize for a labeled-diagram MCQ.
+ * Such a question's figure is vector line-art the raster extractor can't see
+ * (see `Question.needsDiagram`), so the server can only point at WHERE it is —
+ * page + rectangle — and let the browser render it (task: client pdf.js render).
+ * The box is in PDF user units with y measured from the TOP (the same basis as
+ * `Figure.box` and the extracted line coords); the client maps it to canvas
+ * pixels by its own render scale and clamps it to the page.
+ */
+export interface DiagramRequest {
+  questionId: string;
+  page: number;
+  box: { x: number; top: number; w: number; h: number };
+}
+
 /** "Figure 1", "Fig. 2", "Table 10.2" — capture the kind and its number. */
 const LABEL_RE = /\b(figure|fig|table)\b\.?\s*([0-9]+(?:\.[0-9]+)?)/i;
 
@@ -152,22 +167,28 @@ export function attachFigures(
   }
 
   // Pass 2 — positional fallback for CAPTIONLESS, still-unmatched figures: the
-  // nearest anchored question on the same page, preferring the first below.
+  // anchored question on the same page nearest the figure by EDGE DISTANCE. This
+  // is direction-agnostic on purpose. The common exam layout is stem → figure →
+  // options, so the figure sits just below its question's start line (nearest the
+  // question ABOVE it); a shared stimulus instead leads the question it serves
+  // (nearest the question BELOW it). Edge distance picks the right owner in both
+  // cases, and a tie resolves to the earlier (above) question since the first
+  // minimum is kept — so a figure embedded under a stem never jumps to the next
+  // question that happens to start lower on the page.
   figures.forEach((f, i) => {
     if (captions[i] || targets[i].length) return;
     const figTop = f.box.top;
     const figBot = f.box.top + f.box.h;
     let best: string | null = null;
-    let bestScore = Infinity;
+    let bestGap = Infinity;
     for (const q of quiz.questions) {
       const a = anchors.get(q.id);
       if (!a || a.page !== f.page) continue;
-      const below = a.y >= figTop;
-      const gap = below ? a.y - figBot : figTop - a.y;
+      // 0 when the question's start line falls within the figure's vertical span.
+      const gap = a.y >= figBot ? a.y - figBot : a.y <= figTop ? figTop - a.y : 0;
       if (gap > MAX_FALLBACK_GAP) continue;
-      const score = (below ? 0 : 1e6) + Math.max(0, gap);
-      if (score < bestScore) {
-        bestScore = score;
+      if (gap < bestGap) {
+        bestGap = gap;
         best = q.id;
       }
     }
@@ -195,5 +216,60 @@ export function attachFigures(
       attachToIds: targets[i],
     });
   });
+  return out;
+}
+
+/** Padding (PDF user units) around the detected text band, so the captured
+ *  region comfortably includes vector strokes that reach past the labels. */
+const DIAGRAM_PAD = { top: 8, bottomNoNext: 48, side: 16 } as const;
+/** Hard cap on a captured region's height, so a mis-located anchor can't ask the
+ *  client to rasterize half a page. */
+const MAX_DIAGRAM_H = 640;
+
+/**
+ * Build a rasterize request for every `needsDiagram` question — the labeled-
+ * diagram MCQs the parser recovered, whose A/B/C/D choices are letters printed
+ * on a VECTOR figure the raster extractor never sees. We can't capture the
+ * pixels here (no server-side rasterizer), so we hand the client the page and a
+ * rectangle to render.
+ *
+ * The rectangle is the question's vertical band on its page: from just above its
+ * stem down to the next question that starts below it (or a padded bottom when
+ * it's the last on the page), spanning the body text column. Bounding the band
+ * by the next question guarantees the whole figure is inside it without bleeding
+ * into the following question — clipping a diagram would defeat the point, so we
+ * err generous (extra whitespace is harmless). Questions we can't re-locate in
+ * the document get no request and simply fall back to manual image attach.
+ */
+export function computeDiagramRequests(quiz: Quiz, doc: ExtractedDoc): DiagramRequest[] {
+  const needs = quiz.questions.filter((q) => q.needsDiagram);
+  if (!needs.length) return [];
+  const anchors = locateAnchors(quiz, doc);
+  const out: DiagramRequest[] = [];
+  for (const q of needs) {
+    const a = anchors.get(q.id);
+    if (!a) continue;
+    // The nearest question that starts below this one on the SAME page bounds the
+    // band from beneath (figures sit between a stem and the next question).
+    let nextY = Infinity;
+    for (const other of quiz.questions) {
+      const oa = anchors.get(other.id);
+      if (oa && oa.page === a.page && oa.y > a.y && oa.y < nextY) nextY = oa.y;
+    }
+    const band = doc.lines.filter((l) => l.page === a.page && l.y >= a.y - 2 && l.y < nextY);
+    const ws = band.flatMap((l) => l.words);
+    if (!ws.length) continue;
+    const left = Math.max(0, Math.min(...ws.map((w) => w.x)) - DIAGRAM_PAD.side);
+    const right = Math.max(...ws.map((w) => w.x + w.width)) + DIAGRAM_PAD.side;
+    const top = Math.max(0, Math.min(...ws.map((w) => w.y - w.height)) - DIAGRAM_PAD.top);
+    // When another question follows on the page, extend to just above it so the
+    // figure (which may have blank space below its lowest label) is never clipped;
+    // otherwise pad beneath the lowest word.
+    const bottom =
+      nextY === Infinity ? Math.max(...ws.map((w) => w.y)) + DIAGRAM_PAD.bottomNoNext : nextY - 4;
+    const h = Math.min(MAX_DIAGRAM_H, bottom - top);
+    if (h <= 0 || right <= left) continue;
+    out.push({ questionId: q.id, page: a.page, box: { x: left, top, w: right - left, h } });
+  }
   return out;
 }

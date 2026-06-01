@@ -16,8 +16,17 @@ export interface QuizSource {
 export interface QuestionOption {
   /** Original label exactly as written: "A", "B", "C"... */
   label: string;
-  /** Option text exactly as written in the source (no rephrasing). */
+  /** Option text exactly as written in the source (no rephrasing). May be empty
+   *  for a labeled-diagram question (the choice is a position on the figure) or an
+   *  image-per-option question (the choice IS the picture in `image`). */
   text: string;
+  /**
+   * Optional image attached to THIS choice, for questions whose answers are
+   * pictures ("Which graph shows…?" with a figure per option). A REFERENCE only —
+   * the bytes live in IndexedDB keyed by `image.id`, exactly like a stem image.
+   * Null/undefined for ordinary text options.
+   */
+  image?: QuestionImage | null;
 }
 
 /**
@@ -120,6 +129,15 @@ export interface Question {
    * verbatim through publish and combine; the player/editor resolve it lazily.
    */
   image?: QuestionImage | null;
+  /**
+   * Set by the parser for a LABELED-DIAGRAM MCQ — one where the answer choices
+   * (A/B/C/D) are positions/letters printed ON a figure rather than text. The
+   * figure is vector line-art the server extractor can't see, so the client
+   * rasterizes the page region (see PdfParseResult.diagramRequests) and drops the
+   * result into `image`. Until then it signals the review screen to show "diagram
+   * being captured". Cleared once an image is attached; ignored thereafter.
+   */
+  needsDiagram?: boolean;
 }
 
 /**

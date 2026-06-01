@@ -108,8 +108,12 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
       continue;
     }
 
-    // Answer-key header switches us into key-collection mode.
-    if (isAnswerKeyHeader(text)) {
+    // Answer-key header switches us into key-collection mode — but only a REAL
+    // one. A diagram legend ("Key:") matches the same header shape, so we require
+    // a bare "Key" to be corroborated by answer-like rows just below it before we
+    // believe it (an explicit "Answer(s)" header is always honored). Without this,
+    // a pedigree/diagram "Key:" mid-question swallows that question's options.
+    if (isAnswerKeyHeader(text) && answerKeyHeaderConfirmed(text, doc.lines, li)) {
       inKeySection = true;
       commit();
       lastQ = null;
@@ -255,6 +259,7 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
   // least one option), so bare/stray numbering never becomes review noise.
   type Kept =
     | { d: Draft; kind: "mcq" }
+    | { d: Draft; kind: "diagram"; labels: string[]; stem: string }
     | { d: Draft; kind: "tf"; statement: string; correct: "True" | "False"; marks: number | null }
     | { d: Draft; kind: "open"; answer: string; marks: number | null }
     | { d: Draft; kind: "cloze"; answer: string; marks: number | null };
@@ -266,6 +271,18 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
     if (isMultiPart(d)) {
       skipped.push(...expandMultiPart(d));
       continue;
+    }
+    // Labeled-diagram MCQ — choices are bare letters printed ON a figure, not
+    // text. Checked BEFORE the ordinary MCQ keep because such a draft may carry a
+    // stray pseudo-option that would otherwise pass the >=2 gate as a broken MCQ;
+    // detectDiagramLabels rejects anything with real option text, so genuine text
+    // MCQs fall straight through to the keep below.
+    if (d.mcqSection) {
+      const diagram = detectDiagramLabels(d);
+      if (diagram) {
+        kept.push({ d, kind: "diagram", labels: diagram.labels, stem: diagram.stem });
+        continue;
+      }
     }
     if (d.mcqSection && d.options.length >= 2) {
       kept.push({ d, kind: "mcq" });
@@ -329,9 +346,11 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
   const questions = kept.map((k, i) =>
     k.kind === "mcq"
       ? finalize(k.d, keyMap, i, emphasisFont)
-      : k.kind === "tf"
-        ? finalizeTrueFalse(k.d, k.statement, k.correct, i, k.marks)
-        : finalizeOpen(k.d, k.answer, i, k.kind === "cloze" ? "cloze" : "open", k.marks),
+      : k.kind === "diagram"
+        ? finalizeDiagram(k.d, k.labels, k.stem, i)
+        : k.kind === "tf"
+          ? finalizeTrueFalse(k.d, k.statement, k.correct, i, k.marks)
+          : finalizeOpen(k.d, k.answer, i, k.kind === "cloze" ? "cloze" : "open", k.marks),
   );
 
   return {
@@ -366,6 +385,81 @@ function hasOwnOptions(lines: ExtractedDoc["lines"], idx: number, rest: string):
     if (matchOption(t) && ++count >= 2) return true;
   }
   return false;
+}
+
+/**
+ * Decide whether an answer-key-shaped header is REALLY an answer key, so a
+ * diagram legend ("Key:") isn't mistaken for one and swallow the question's
+ * options into key-collection mode. An explicit "Answer(s)" header is always
+ * honored. A BARE "Key" is believed only when corroborated: we look ahead a few
+ * non-empty lines and accept it the moment a genuine letter-pair key row ("1. B
+ * 2. A 3. D") appears, but reject it as soon as a question or section header
+ * shows up first — the legend case, where the next real thing is the question's
+ * own options or the following question, never a key row.
+ */
+function answerKeyHeaderConfirmed(
+  header: string,
+  lines: ExtractedDoc["lines"],
+  idx: number,
+): boolean {
+  if (/answer/i.test(header)) return true;
+  let seen = 0;
+  for (let j = idx + 1; j < lines.length && seen < 8; j++) {
+    const t = lines[j].text;
+    if (!t.trim()) continue;
+    seen++;
+    if (isKeyLine(t)) return true; // "1. B  2. A  3. D" → a real key follows
+    if (matchQuestion(t) || matchSectionHeader(t)) return false; // legend, not a key
+  }
+  return false;
+}
+
+/** Flag shown on a recovered labeled-diagram MCQ so the review screen explains
+ *  why its choices have no text and where the picture will come from. */
+const DIAGRAM_FLAG =
+  "Diagram question — choose the labelled position on the figure (captured from the PDF)";
+
+// A STANDALONE label printed on a figure: "A.", "(C)", "D)" surrounded by
+// whitespace/line-edges. Deliberately narrow (single A–H letter, no following
+// text) so it never matches an ordinary text option "A) Nucleus".
+const DIAGRAM_LABEL_RE = /(?:^|\s)\(?([A-H])[.)](?=\s|$)/g;
+
+/**
+ * Recover a LABELED-DIAGRAM MCQ — one whose choices A/B/C/D are bare letters
+ * printed ON a figure (vector line-art the extractor can't see) rather than text
+ * options. PDF extraction leaves those letters glued into the stem ("… points to
+ * C. A. D. B.") and yields no usable options, so the draft would otherwise be
+ * dropped as un-importable.
+ *
+ * Detected conservatively: it fires ONLY when no captured option carries real
+ * text (a leading glued-on label like "D." is stripped before the test), and the
+ * stem/options contain a run of standalone labels A, B, C, … of length >= 3. A
+ * genuine text MCQ is rejected immediately (its options have text), so normal
+ * parsing is untouched. Returns the labels in A,B,C order and the stem with those
+ * standalone letters removed, or null when this isn't a diagram MCQ.
+ */
+function detectDiagramLabels(d: Draft): { labels: string[]; stem: string } | null {
+  for (const o of d.options) {
+    const body = o.text.replace(/^\s*\(?[A-H][.)]\s*/, "").trim();
+    if (/\w/.test(body)) return null; // a real text option → not a diagram MCQ
+  }
+  const blob = [...d.stemLines, ...d.options.map((o) => `${o.label}. ${o.text}`)].join(" ");
+  DIAGRAM_LABEL_RE.lastIndex = 0;
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = DIAGRAM_LABEL_RE.exec(blob))) found.add(m[1].toUpperCase());
+  const labels: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const ch = String.fromCharCode(65 + i);
+    if (!found.has(ch)) break; // require the run to be consecutive from A
+    labels.push(ch);
+  }
+  if (labels.length < 3) return null;
+  const stem = repairGluedWords(
+    d.stemLines.join(" ").replace(DIAGRAM_LABEL_RE, " ").replace(/\s+/g, " ").trim(),
+  );
+  if ((stem.match(/[A-Za-z]/g) ?? []).length < 3) return null; // nothing but stray letters left
+  return { labels, stem };
 }
 
 const MULTIPART_REASON = "Multi-part question — add an answer or its mark scheme";
@@ -638,6 +732,42 @@ function finalize(
 
   const scored = scoreQuestion(base);
   return { ...base, confidence: scored.confidence, flags: scored.flags };
+}
+
+/**
+ * Finalize a recovered LABELED-DIAGRAM MCQ. Its choices are the bare letters
+ * printed on the figure, so each option keeps its label with EMPTY text (the
+ * player/editor render the letter itself). No answer can be read from text — the
+ * figure is vector art the server can't see — so `correct` stays null and
+ * `needsDiagram` asks the client to rasterize the page region and attach it. The
+ * explanatory diagram flag leads, ahead of the generic confidence flags.
+ */
+function finalizeDiagram(
+  d: Draft,
+  labels: string[],
+  cleanedStem: string,
+  index: number,
+): Question {
+  const { text, marks } = parseMarkAllocation(cleanedStem);
+  const stem = splitEnumeratedStem(text);
+  const options: QuestionOption[] = labels.map((label) => ({ label, text: "" }));
+  const explanation = d.explanationLines.length
+    ? repairGluedWords(d.explanationLines.join(" ").replace(/\s+/g, " ").trim())
+    : null;
+  const base: Omit<Question, "confidence"> = {
+    id: newQuestionId(index + 1),
+    number: d.number,
+    type: "mcq",
+    stem,
+    options,
+    correct: null,
+    explanation,
+    ...(marks != null ? { marks } : {}),
+    needsDiagram: true,
+    flags: [],
+  };
+  const scored = scoreQuestion(base);
+  return { ...base, confidence: scored.confidence, flags: [DIAGRAM_FLAG, ...scored.flags] };
 }
 
 /** Finalize a True/False draft into a two-option question (A = True, B = False)

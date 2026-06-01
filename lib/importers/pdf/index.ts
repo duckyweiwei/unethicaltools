@@ -2,7 +2,7 @@ import type { Quiz } from "../../domain/types";
 import type { Importer } from "../types";
 import { extractPdf, PdfTooLargeError } from "./extract";
 import { extractPdfFigures, type ExtractedImage } from "./images";
-import { attachFigures } from "./attach";
+import { attachFigures, computeDiagramRequests, type DiagramRequest } from "./attach";
 import { extractAnswerKeyPairs, parseExtracted, parseMarkScheme } from "./parser";
 import type { MarkSchemeEntry } from "./parser";
 import type { KeyPair } from "./parser/patterns";
@@ -28,6 +28,12 @@ export interface PdfParseResult {
   pages: number;
   /** Figures pulled from the PDF (best-effort), for the review tray to attach. */
   images: ExtractedImage[];
+  /**
+   * Rasterize requests for labeled-diagram MCQs (`Question.needsDiagram`): page +
+   * region the CLIENT must render, because those figures are vector line-art the
+   * server's raster extractor can't capture. Empty when the paper has none.
+   */
+  diagramRequests: DiagramRequest[];
 }
 
 /**
@@ -52,10 +58,15 @@ export async function parsePdf(
   // and position so the client can auto-attach the confident ones.
   const figures = await extractPdfFigures(imageBytes, doc.pages).catch(() => []);
   const images = figures.length ? attachFigures(figures, quiz, doc) : [];
-  return { quiz, answerKey, markScheme, pages: doc.pages, images };
+  // Independent of the raster pass: diagram MCQs reference VECTOR figures the
+  // extractor never finds, so their regions are computed straight from text
+  // geometry for the client to rasterize.
+  const diagramRequests = computeDiagramRequests(quiz, doc);
+  return { quiz, answerKey, markScheme, pages: doc.pages, images, diagramRequests };
 }
 
 export { PdfTooLargeError };
+export type { DiagramRequest } from "./attach";
 
 /**
  * The PDF importer: ingestion -> extraction -> deterministic parse.

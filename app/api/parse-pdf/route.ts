@@ -61,7 +61,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { quiz, answerKey, markScheme, pages, images } = await parsePdf(
+    const { quiz, answerKey, markScheme, pages, images, diagramRequests } = await parsePdf(
       { data, filename: file.name },
       { maxPages: MAX_PAGES },
     );
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
         { status: 422 },
       );
     }
-    return NextResponse.json({ quiz, answerKey, markScheme, pages, images });
+    return NextResponse.json({ quiz, answerKey, markScheme, pages, images, diagramRequests });
   } catch (err) {
     if (err instanceof PdfTooLargeError) {
       return NextResponse.json(

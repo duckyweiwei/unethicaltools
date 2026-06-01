@@ -10,6 +10,7 @@
  */
 import type {
   Question,
+  QuestionImage,
   QuestionOption,
   QuestionType,
   Quiz,
@@ -66,9 +67,28 @@ function makeId(prefix: string): string {
   return `${prefix}_${rand}`;
 }
 
+/** A QuestionImage REFERENCE (the pixels live in IndexedDB, keyed by `id`). We
+ *  only keep it when it carries a real `id`; the optional alt/dimensions are
+ *  preserved when present so the player can still reserve aspect-ratio space. */
+function normalizeImageRef(raw: unknown): QuestionImage | undefined {
+  if (!isRecord(raw)) return undefined;
+  const id = asString(raw.id);
+  if (!id) return undefined;
+  const ref: QuestionImage = { id };
+  if (typeof raw.alt === "string") ref.alt = raw.alt;
+  if (typeof raw.width === "number" && Number.isFinite(raw.width)) ref.width = raw.width;
+  if (typeof raw.height === "number" && Number.isFinite(raw.height)) ref.height = raw.height;
+  return ref;
+}
+
 function normalizeOption(raw: unknown): QuestionOption | null {
   if (!isRecord(raw)) return null;
-  return { label: asString(raw.label), text: asString(raw.text) };
+  const opt: QuestionOption = { label: asString(raw.label), text: asString(raw.text) };
+  // Per-option image (image-per-answer questions) — a reference into the image
+  // store, carried through save/load like the stem image so it isn't dropped.
+  const image = normalizeImageRef(raw.image);
+  if (image) opt.image = image;
+  return opt;
 }
 
 /** Repair one question's SHAPE. Every original field is preserved verbatim (the

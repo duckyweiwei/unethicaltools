@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Quiz, Question, QuestionOption } from "@/lib/domain/types";
+import type { Quiz, Question, QuestionOption, QuestionImage } from "@/lib/domain/types";
 import {
   usesAnswerText,
   isMultiSelect,
@@ -25,6 +25,7 @@ import {
   Play,
   Restart,
   Shuffle,
+  Star,
   SwapVertical,
   Volume,
   VolumeOff,
@@ -61,6 +62,23 @@ function StemImage({ q }: { q: Question }) {
   );
 }
 
+/** A picture attached to ONE answer choice (image-per-answer questions, where the
+ *  choice itself is a figure). Resolves the bytes lazily from IndexedDB and, like
+ *  StemImage, renders nothing while loading or when the reference is stale — so a
+ *  missing image degrades to the option's text/letter rather than a broken icon. */
+function OptionImage({ image, alt }: { image?: QuestionImage | null; alt: string }) {
+  const url = useImage(image?.id);
+  if (!image || !url) return null;
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element -- dataURL from IndexedDB, nothing for next/image to optimize */
+    <img
+      src={url}
+      alt={alt}
+      className="mt-1 block max-h-44 w-auto rounded-md border border-neutral-200 object-contain"
+    />
+  );
+}
+
 /** A question is playable if it can be graded: an MCQ (or True/False) with a
  *  marked answer, or a self-graded short-answer / fill-in-the-blank with a
  *  reference answer to grade against. */
@@ -92,6 +110,9 @@ function shuffleOptions(q: Question): Question {
   const options: QuestionOption[] = order.map((o, i) => ({
     label: LETTERS[i] ?? o.label,
     text: o.text,
+    // Keep any per-option image (image-per-answer questions) pinned to its choice
+    // as it moves; only the visible letter changes.
+    ...(o.image ? { image: o.image } : {}),
   }));
   // Old label → new label, by position after the shuffle.
   const remap = new Map<string, string>();
@@ -180,6 +201,11 @@ export function QuizPlayer({
   // Short-answer questions reveal their reference answer before self-grading;
   // `revealed[qid]` tracks that, independent of the MCQ `checked` lock.
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  // Flashcards: cards the learner explicitly stars to revisit, independent of the
+  // known/still-learning verdict. A card can be "known" yet still marked (e.g.
+  // "got it, but check the wording later"). Drives the "Review N marked" retry on
+  // the results screen, mirroring the wrong-answer retry. Reset each run.
+  const [markedForReview, setMarkedForReview] = useState<Set<string>>(new Set());
 
   // Audio cues for right/wrong answers (and a finish flourish). On by default;
   // the learner's mute choice persists. Read once on mount to avoid an SSR
@@ -295,6 +321,7 @@ export function QuizPlayer({
     setAnswers({});
     setChecked({});
     setRevealed({});
+    setMarkedForReview(new Set());
     setStepIdx(0);
     setFlipped(false);
     runStartRef.current = Date.now();
@@ -313,6 +340,7 @@ export function QuizPlayer({
     setAnswers({});
     setChecked({});
     setRevealed({});
+    setMarkedForReview(new Set());
     setStepIdx(0);
     setFlipped(false);
     runStartRef.current = Date.now();
@@ -362,6 +390,15 @@ export function QuizPlayer({
     if (stepIdx >= test.length - 1) setPhase("results");
     else gotoCard(stepIdx + 1);
   };
+  // Flashcards: star/unstar the current card for later review. Immutable update so
+  // React sees a new Set reference and re-renders the toggle + results count.
+  const toggleMark = (qid: string) =>
+    setMarkedForReview((prev) => {
+      const next = new Set(prev);
+      if (next.has(qid)) next.delete(qid);
+      else next.add(qid);
+      return next;
+    });
 
   // Mute toggle — the one study control that must stay reachable mid-test, so it
   // lives in the player's chrome in both layouts.
@@ -663,6 +700,7 @@ export function QuizPlayer({
     if (runMode === "flash") {
       const known = test.filter((t) => answers[t.id] === RIGHT);
       const toReview = test.filter((t) => answers[t.id] !== RIGHT);
+      const marked = test.filter((t) => markedForReview.has(t.id));
       const knownPct = test.length ? Math.round((known.length / test.length) * 100) : 0;
       return (
         <div className={rootCls}>
@@ -685,20 +723,65 @@ export function QuizPlayer({
                       <Restart className="h-4 w-4" /> Review {toReview.length} again
                     </button>
                   )}
+                  {marked.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => retryWrong(marked)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-100"
+                    >
+                      <Star className="h-4 w-4" /> Review {marked.length} marked
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setPhase("setup")}
                     className={cx(
                       "inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition",
-                      toReview.length > 0
-                        ? "border border-neutral-200 text-neutral-700 hover:bg-neutral-50"
-                        : "bg-neutral-900 text-white hover:bg-neutral-700",
+                      toReview.length === 0 && marked.length === 0
+                        ? "bg-neutral-900 text-white hover:bg-neutral-700"
+                        : "border border-neutral-200 text-neutral-700 hover:bg-neutral-50",
                     )}
                   >
                     <Restart className="h-4 w-4" /> Study all again
                   </button>
                 </div>
               </div>
+
+              {marked.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="flex items-center gap-1.5 text-sm font-semibold text-neutral-700">
+                    <Star className="h-4 w-4 text-amber-500" /> Marked for review ({marked.length})
+                  </h3>
+                  <div className="mt-3 space-y-3">
+                    {marked.map((q, i) => (
+                      <div
+                        key={q.id}
+                        className="rounded-2xl border border-amber-200 bg-white p-5 shadow-sm"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
+                            Card {i + 1}
+                          </span>
+                          {showSource && q.sourceLabel && <SourceBadge label={q.sourceLabel} />}
+                        </div>
+                        <div className="mt-2 whitespace-pre-line text-[15px] font-medium text-neutral-900">
+                          {q.stem}
+                        </div>
+                        <StemImage q={q} />
+                        <div className="mt-3">
+                          <FlashAnswer q={q} />
+                        </div>
+                        {q.explanation && (
+                          <div className="mt-3 rounded-lg bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
+                            <span className="font-medium text-neutral-700">Why: </span>
+                            {q.explanation}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {toReview.length > 0 ? (
                 <div className="mt-6">
@@ -847,7 +930,10 @@ export function QuizPlayer({
                           <span className="w-5 shrink-0 text-center text-xs font-semibold text-neutral-400">
                             {o.label}
                           </span>
-                          <span className="flex-1">{o.text}</span>
+                          <span className="min-w-0 flex-1">
+                            {o.text && <span className="whitespace-pre-line">{o.text}</span>}
+                            <OptionImage image={o.image} alt={o.text || `Option ${o.label}`} />
+                          </span>
                           {isCorrect && <Check className="h-4 w-4 shrink-0 text-emerald-600" />}
                           {isChosen && !isCorrect && <Close className="h-4 w-4 shrink-0 text-rose-500" />}
                         </div>
@@ -880,6 +966,7 @@ export function QuizPlayer({
     const verdict = answers[card.id];
     const knownCount = test.filter((t) => answers[t.id] === RIGHT).length;
     const reviewCount = test.filter((t) => answers[t.id] === WRONG).length;
+    const isMarked = markedForReview.has(card.id);
     return (
       <div className={rootCls}>
         {Header}
@@ -891,13 +978,32 @@ export function QuizPlayer({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex max-w-2xl flex-col px-6 py-8">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
                 Card {stepIdx + 1} of {total}
               </div>
               <div className="flex items-center gap-3 text-xs font-medium">
                 <span className="text-emerald-600">{knownCount} known</span>
                 <span className="text-amber-600">{reviewCount} to review</span>
+                <button
+                  type="button"
+                  onClick={() => toggleMark(card.id)}
+                  aria-pressed={isMarked}
+                  aria-label={isMarked ? "Unmark this card" : "Mark this card for review"}
+                  title={
+                    isMarked
+                      ? "Marked for review — tap to unmark"
+                      : "Mark this card for review"
+                  }
+                  className={cx(
+                    "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 transition",
+                    isMarked
+                      ? "border-amber-300 bg-amber-50 text-amber-700"
+                      : "border-neutral-200 text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900",
+                  )}
+                >
+                  <Star className="h-3.5 w-3.5" /> {isMarked ? "Marked" : "Mark"}
+                </button>
               </div>
             </div>
 
@@ -925,7 +1031,10 @@ export function QuizPlayer({
                       {card.options.map((o) => (
                         <li key={o.label} className="flex gap-2 text-sm text-neutral-600">
                           <span className="font-semibold text-neutral-400">{o.label}.</span>
-                          <span>{o.text}</span>
+                          <span className="min-w-0 flex-1">
+                            {o.text && <span className="whitespace-pre-line">{o.text}</span>}
+                            <OptionImage image={o.image} alt={o.text || `Option ${o.label}`} />
+                          </span>
                         </li>
                       ))}
                     </ul>
@@ -1039,6 +1148,7 @@ export function QuizPlayer({
                         key={o.label}
                         label={o.label}
                         text={o.text}
+                        image={o.image}
                         multi={isMultiSelect(q)}
                         selected={
                           isMultiSelect(q)
@@ -1119,6 +1229,7 @@ export function QuizPlayer({
                       key={o.label}
                       label={o.label}
                       text={o.text}
+                      image={o.image}
                       multi={isMultiSelect(q)}
                       selected={
                         isMultiSelect(q)
@@ -1214,6 +1325,7 @@ function SelectAllHint() {
 function OptionButton({
   label,
   text,
+  image,
   selected,
   onClick,
   revealed = false,
@@ -1223,6 +1335,8 @@ function OptionButton({
 }: {
   label: string;
   text: string;
+  /** Per-choice picture (image-per-answer questions); rendered beneath the text. */
+  image?: QuestionImage | null;
   selected: boolean;
   onClick: () => void;
   revealed?: boolean;
@@ -1273,7 +1387,7 @@ function OptionButton({
       </span>
       <span
         className={cx(
-          "flex-1",
+          "min-w-0 flex-1",
           showCorrect
             ? "font-medium text-emerald-900"
             : showWrong
@@ -1283,7 +1397,10 @@ function OptionButton({
                 : "text-neutral-700",
         )}
       >
-        {text}
+        {/* Show the text; if a choice has none (a labeled-diagram option) but no
+            picture either, fall back to its letter so the row isn't blank. */}
+        {(text || !image) && <span className="whitespace-pre-line">{text || label}</span>}
+        <OptionImage image={image} alt={text || `Option ${label}`} />
       </span>
       {showCorrect && <Check className="h-4 w-4 shrink-0 text-emerald-600" />}
       {showWrong && <Close className="h-4 w-4 shrink-0 text-rose-500" />}
@@ -1468,7 +1585,10 @@ function FlashAnswer({ q }: { q: Question }) {
           {correctOpts.map((o) => (
             <li key={o.label} className="flex items-start gap-2">
               <span className="font-semibold">{o.label}.</span>
-              <span>{o.text}</span>
+              <span className="min-w-0 flex-1">
+                {o.text && <span className="whitespace-pre-line">{o.text}</span>}
+                <OptionImage image={o.image} alt={o.text || `Option ${o.label}`} />
+              </span>
             </li>
           ))}
         </ul>
@@ -1483,7 +1603,12 @@ function FlashAnswer({ q }: { q: Question }) {
       </div>
       <div className="mt-1 flex items-start gap-2 text-lg text-emerald-900">
         {correctOpt && <span className="font-semibold">{correctOpt.label}.</span>}
-        <span>{correctOpt?.text ?? q.correct}</span>
+        <span className="min-w-0 flex-1">
+          {(correctOpt?.text || !correctOpt) && (
+            <span className="whitespace-pre-line">{correctOpt?.text ?? q.correct}</span>
+          )}
+          <OptionImage image={correctOpt?.image} alt={correctOpt?.text || "Correct option"} />
+        </span>
       </div>
     </div>
   );

@@ -255,6 +255,102 @@ function ImageField({
   );
 }
 
+/** Per-choice image control — attach / replace / remove the picture on ONE answer
+ *  option (image-per-answer questions, where the choice IS a figure). A compact
+ *  sibling of ImageField: it writes the bytes to IndexedDB and drops replaced
+ *  bytes; only the lightweight pointer is persisted, via onChange (setOptionImage).
+ *  Sits indented beneath its choice row. */
+function OptionImageField({
+  image,
+  label,
+  onChange,
+}: {
+  image?: QuestionImage | null;
+  label: string;
+  onChange: (image: QuestionImage | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const url = useImage(image?.id);
+  const [busy, setBusy] = useState(false);
+
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setBusy(true);
+    const prevId = image?.id;
+    try {
+      const ref = await storeImageFile(file);
+      onChange(ref);
+      if (prevId) deleteImage(prevId).catch(() => {}); // drop the replaced bytes
+    } catch {
+      /* swallow — leave the option image-less rather than block editing the quiz */
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = ""; // allow re-picking the same file
+    }
+  }
+
+  function remove() {
+    const prevId = image?.id;
+    onChange(null);
+    if (prevId) deleteImage(prevId).catch(() => {});
+  }
+
+  return (
+    <div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => pick(e.target.files?.[0])}
+      />
+      {image ? (
+        <div className="flex items-center gap-2">
+          {url ? (
+            /* eslint-disable-next-line @next/next/no-img-element -- dataURL from IndexedDB */
+            <img
+              src={url}
+              alt={`Option ${label} image`}
+              className="max-h-24 w-auto rounded-md border border-neutral-200 object-contain"
+            />
+          ) : (
+            <div className="grid h-16 w-24 place-items-center rounded-md border border-dashed border-neutral-200 text-neutral-300">
+              <ImageIcon className="h-4 w-4" />
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-[11px] font-medium text-neutral-600 transition hover:bg-neutral-50 disabled:opacity-50"
+          >
+            <Upload className="h-3 w-3" />
+            {busy ? "Replacing…" : "Replace"}
+          </button>
+          <button
+            type="button"
+            onClick={remove}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-rose-500 transition hover:bg-rose-50"
+          >
+            <Trash className="h-3 w-3" />
+            Remove
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-neutral-400 transition hover:bg-neutral-50 hover:text-neutral-600 disabled:opacity-50"
+        >
+          <ImageIcon className="h-3.5 w-3.5" />
+          {busy ? "Adding…" : "Add image"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Review-tray thumbnail — one auto-extracted figure offered for attaching.
  * Its bytes already live in IndexedDB (the uploader wrote them); we only load
@@ -335,6 +431,7 @@ interface QuestionCardProps {
   setAnswerText: (id: string, text: string) => void;
   setExplanation: (id: string, explanation: string) => void;
   setOptionText: (id: string, label: string, text: string) => void;
+  setOptionImage: (id: string, label: string, image: QuestionImage | null) => void;
   setCorrect: (id: string, label: string) => void;
   addOption: (id: string) => void;
   deleteOption: (id: string, label: string) => void;
@@ -357,6 +454,7 @@ const QuestionCard = memo(function QuestionCard({
   setAnswerText,
   setExplanation,
   setOptionText,
+  setOptionImage,
   setCorrect,
   addOption,
   deleteOption,
@@ -487,7 +585,8 @@ const QuestionCard = memo(function QuestionCard({
                 ? (q.correctSet ?? []).includes(o.label)
                 : q.correct === o.label;
               return (
-                <div key={o.label} className="flex items-center gap-3">
+                <div key={o.label} className="space-y-2">
+                  <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => setCorrect(q.id, o.label)}
@@ -524,6 +623,16 @@ const QuestionCard = memo(function QuestionCard({
                   >
                     <Trash />
                   </button>
+                  </div>
+                  {/* Per-choice picture (image-per-answer questions), indented to
+                      line up under the option text. */}
+                  <div className="pl-[4.25rem]">
+                    <OptionImageField
+                      image={o.image}
+                      label={o.label}
+                      onChange={(img) => setOptionImage(q.id, o.label, img)}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -767,6 +876,18 @@ export function QuizEditor({ initial }: { initial: Quiz }) {
     [patchQuestion],
   );
 
+  // Record (or clear) ONE option's image reference. Like setImage, the bytes are
+  // written to / removed from IndexedDB by the per-option control (OptionImageField);
+  // here we only persist the pointer on that choice.
+  const setOptionImage = useCallback(
+    (id: string, label: string, image: QuestionImage | null) =>
+      patchQuestion(id, (q) => ({
+        ...q,
+        options: q.options.map((o) => (o.label === label ? { ...o, image } : o)),
+      })),
+    [patchQuestion],
+  );
+
   const setCorrect = useCallback(
     (id: string, label: string) =>
       patchQuestion(id, (q) => {
@@ -817,7 +938,11 @@ export function QuizEditor({ initial }: { initial: Quiz }) {
   );
 
   const deleteOption = useCallback(
-    (id: string, label: string) =>
+    (id: string, label: string) => {
+      // Drop the deleted option's image bytes (if any) so they don't orphan in
+      // IndexedDB once the choice is gone.
+      const victim = quizRef.current.questions.find((x) => x.id === id);
+      const imgId = victim?.options.find((o) => o.label === label)?.image?.id;
       patchQuestion(id, (q) => {
         const idx = q.options.findIndex((o) => o.label === label);
         if (idx === -1) return q;
@@ -844,7 +969,9 @@ export function QuizEditor({ initial }: { initial: Quiz }) {
         const correct =
           q.correct && q.correct !== label ? remap.get(q.correct) ?? null : null;
         return { ...q, options: remaining, correct };
-      }),
+      });
+      if (imgId) deleteImage(imgId).catch(() => {});
+    },
     [patchQuestion],
   );
 
@@ -863,10 +990,15 @@ export function QuizEditor({ initial }: { initial: Quiz }) {
   const deleteQuestion = useCallback((id: string) => {
     const qs = quizRef.current.questions;
     const idx = qs.findIndex((q) => q.id === id);
-    const imageId = qs[idx]?.image?.id;
+    const victim = qs[idx];
+    // Free the stem image AND every per-option image so none orphan in IndexedDB.
+    const imageIds = [
+      victim?.image?.id,
+      ...(victim?.options.map((o) => o.image?.id) ?? []),
+    ].filter((x): x is string => !!x);
     const remaining = qs.filter((q) => q.id !== id);
     setQuiz((prev) => ({ ...prev, questions: prev.questions.filter((q) => q.id !== id) }));
-    if (imageId) deleteImage(imageId).catch(() => {}); // don't orphan its bytes
+    for (const imageId of imageIds) deleteImage(imageId).catch(() => {}); // don't orphan bytes
     setMenuId(null);
     setActiveId((cur) =>
       cur === id ? (remaining[idx] ?? remaining[idx - 1])?.id ?? "" : cur,
@@ -1455,6 +1587,7 @@ export function QuizEditor({ initial }: { initial: Quiz }) {
                 setAnswerText={setAnswerText}
                 setExplanation={setExplanation}
                 setOptionText={setOptionText}
+                setOptionImage={setOptionImage}
                 setCorrect={setCorrect}
                 addOption={addOption}
                 deleteOption={deleteOption}

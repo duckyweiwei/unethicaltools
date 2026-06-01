@@ -212,7 +212,7 @@ export function tryScrambleNumbers(
     const tok = optNums[i];
     const text =
       o.text.slice(0, tok.index) + String(newVals[i]) + o.text.slice(tok.index + tok.length);
-    return { label: o.label, text };
+    return { ...o, text }; // keep label, any attached option image — only numbers move
   });
 
   // id / number / correct label all unchanged — only the numbers move.

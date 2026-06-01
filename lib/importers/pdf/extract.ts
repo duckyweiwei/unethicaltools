@@ -71,12 +71,16 @@ export async function extractPdf(
     throw new PdfTooLargeError(pdf.numPages, opts.maxPages);
   }
   const lines: Line[] = [];
+  // Per-page height, so the header/footer pass can reason about margins as a
+  // FRACTION of page height (robust to pages of differing size).
+  const pageHeights = new Map<number, number>();
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale: 1 });
     const pageHeight = viewport.height;
     const pageWidth = viewport.width;
+    pageHeights.set(p, pageHeight);
     const content = await page.getTextContent();
 
     const items: RawItem[] = [];
@@ -100,7 +104,123 @@ export async function extractPdf(
     lines.push(...buildLines(items, gutterX, p));
   }
 
-  return { pages: pdf.numPages, lines, text: lines.map((l) => l.text).join("\n") };
+  const kept = stripRunningHeadersFooters(lines, pageHeights);
+  return { pages: pdf.numPages, lines: kept, text: kept.map((l) => l.text).join("\n") };
+}
+
+/**
+ * Drop running page headers/footers (the paper code, page numbers, "Turn over")
+ * before the parser can glue them into stems/options. Pure rule-based — nothing
+ * is rewritten by a model.
+ *
+ * A physical margin ROW is a header/footer iff ALL hold:
+ *   1. it sits in the top or bottom MARGIN band of its page;
+ *   2. its NORMALIZED text (case-, whitespace-, dash- and digit-folded, so a
+ *      page number like "– 12 –" or a code "8825 – 6007" matches across pages)
+ *      recurs on >= MIN_PAGES distinct pages; and
+ *   3. those occurrences sit at nearly the same FRACTIONAL y (one consistent
+ *      band — not a coincidental string seen at the top on one page and the
+ *      bottom on another).
+ *
+ * Column-split headers are handled first: when column detection slices a
+ * full-width header into per-column pieces (e.g. "– 12 –" | "8825–6007" beside a
+ * figure), we rejoin same-page lines sharing a y into one row BEFORE matching, so
+ * the rejoined "– 12 – 8825–6007" still matches the header seen whole elsewhere.
+ *
+ * Deliberately conservative: genuine question content is unique per question, so
+ * it can never satisfy (2)+(3). When in doubt the row is kept.
+ */
+function stripRunningHeadersFooters(lines: Line[], pageHeights: Map<number, number>): Line[] {
+  // Top/bottom band as a fraction of page height. The IB header sits at ~6% and
+  // the first question line at ~9%, so 12% comfortably covers headers without
+  // relying on the band alone to spare content (recurrence does that).
+  const MARGIN_FRAC = 0.12;
+  // Same row must repeat on at least this many distinct pages to count.
+  const MIN_PAGES = 3;
+  // Cross-page: occurrences must cluster within this fraction of page height to
+  // be "the same band" — keeps a top-margin string from grouping with a
+  // bottom-margin one.
+  const Y_TOL_FRAC = 0.04;
+  // Same-page: lines within this fraction of each other are one physical row
+  // (column-split pieces of a header). Tight, so a header (~6%) never merges
+  // with the first question line (~9%).
+  const ROW_TOL_FRAC = 0.012;
+
+  // 1. Keep only margin-band lines, tagged with their fractional y.
+  type MLine = { line: Line; yFrac: number };
+  const byPage = new Map<number, MLine[]>();
+  for (const line of lines) {
+    const ph = pageHeights.get(line.page);
+    if (!ph) continue;
+    const yFrac = line.y / ph;
+    if (yFrac >= MARGIN_FRAC && yFrac <= 1 - MARGIN_FRAC) continue; // mid-page, not a margin
+    let a = byPage.get(line.page);
+    if (!a) byPage.set(line.page, (a = []));
+    a.push({ line, yFrac });
+  }
+
+  // 2. Merge same-page margin lines that share a y into one physical row (rejoins
+  //    column-split header pieces). Text is concatenated left-to-right.
+  type Row = { page: number; yFrac: number; members: Line[]; text: string };
+  const rows: Row[] = [];
+  for (const [page, ms] of byPage) {
+    ms.sort((a, b) => a.yFrac - b.yFrac);
+    let cur: MLine[] = [];
+    const flush = () => {
+      if (!cur.length) return;
+      const ordered = [...cur].sort((a, b) => a.line.x - b.line.x);
+      rows.push({
+        page,
+        yFrac: cur[0].yFrac, // smallest, since cur is built in ascending y
+        members: ordered.map((c) => c.line),
+        text: ordered.map((c) => c.line.text).join(" "),
+      });
+      cur = [];
+    };
+    for (const m of ms) {
+      if (cur.length && m.yFrac - cur[0].yFrac > ROW_TOL_FRAC) flush();
+      cur.push(m);
+    }
+    flush();
+  }
+
+  // 3. Group rows across pages by their folded key.
+  const groups = new Map<string, { rows: Row[]; pages: Set<number> }>();
+  for (const r of rows) {
+    const key = headerKey(r.text);
+    if (!key) continue;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { rows: [], pages: new Set() }));
+    g.rows.push(r);
+    g.pages.add(r.page);
+  }
+
+  // 4. Drop every member line of any qualifying group.
+  const drop = new Set<Line>();
+  for (const g of groups.values()) {
+    if (g.pages.size < MIN_PAGES) continue;
+    const ys = g.rows.map((r) => r.yFrac);
+    if (Math.max(...ys) - Math.min(...ys) > Y_TOL_FRAC) continue; // not one consistent band
+    for (const r of g.rows) for (const m of r.members) drop.add(m);
+  }
+
+  return drop.size ? lines.filter((l) => !drop.has(l)) : lines;
+}
+
+/**
+ * Fold a line to a recurrence key: lower-case, unify dash variants, mask every
+ * run of digits to "#", and DROP all whitespace. Whitespace-insensitivity lets a
+ * header survive both inter-token spacing variance ("8825–6007" vs "8825 – 6007")
+ * and column-split rejoining, while digit masking lets page-varying numbers
+ * ("– 12 –" vs "– 13 –") share one key. Only digits are masked, so distinct word
+ * content never collides.
+ */
+function headerKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[‐-―−]/g, "-") // hyphen/en/em/minus dashes → "-"
+    .replace(/\d+/g, "#")
+    .replace(/\s+/g, "");
 }
 
 /**

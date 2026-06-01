@@ -6,9 +6,13 @@ import type { Quiz, Question } from "@/lib/domain/types";
 import { newImageId } from "@/lib/domain/ids";
 import { type AnswerKeyEntry, type MarkSchemeEntry, mergeQuizzes } from "@/lib/importers/merge";
 import { putImage, writeTray, type TrayImage } from "@/lib/storage/image-store";
-// Type-only: the runtime module pulls in unpdf/node:zlib and must never reach
+// Client-side renderer for labeled-diagram MCQs. Safe to import statically: it
+// only pulls pdf.js in behind a dynamic import (own chunk), never at module load.
+import { rasterizeDiagramRequests } from "@/lib/importers/pdf/client-raster";
+// Type-only: the runtime modules pull in unpdf/node:zlib and must never reach
 // the client bundle. `import type` is erased at compile time, so this is safe.
 import type { ExtractedImage } from "@/lib/importers/pdf/images";
+import type { DiagramRequest } from "@/lib/importers/pdf/attach";
 import { Alert, Check, Cloud, Close } from "@/components/quiz-editor/icons";
 
 const MAX_FILES = 8;
@@ -37,6 +41,9 @@ const TYPE_LABEL: Record<DocType, string> = {
 
 interface StagedDoc {
   uid: string;
+  /** The original upload, kept so diagram regions can be rasterized client-side
+   *  at create time (the server can't see the vector figures they reference). */
+  file: File;
   fileName: string;
   sizeLabel: string;
   status: "parsing" | "ready" | "error";
@@ -55,6 +62,8 @@ interface StagedDoc {
   markScheme: MarkSchemeEntry[];
   /** Figures the server pulled from this PDF, offered later in the review tray. */
   images: ExtractedImage[];
+  /** Regions the CLIENT must render (vector diagram MCQs the server can't raster). */
+  diagramRequests: DiagramRequest[];
   questionCount: number;
   keyCount: number;
   markSchemeCount: number;
@@ -68,6 +77,7 @@ interface ParseResponse {
   markScheme?: MarkSchemeEntry[];
   pages?: number;
   images?: ExtractedImage[];
+  diagramRequests?: DiagramRequest[];
   error?: string;
 }
 
@@ -164,6 +174,7 @@ export function PdfUploader() {
   function makeDoc(file: File, status: StagedDoc["status"], error: string | null, uid = newUid()): StagedDoc {
     return {
       uid,
+      file,
       fileName: file.name,
       sizeLabel: mbLabel(file.size),
       status,
@@ -178,6 +189,7 @@ export function PdfUploader() {
       answerKey: [],
       markScheme: [],
       images: [],
+      diagramRequests: [],
       questionCount: 0,
       keyCount: 0,
       markSchemeCount: 0,
@@ -243,6 +255,7 @@ export function PdfUploader() {
         answerKey: json.answerKey ?? [],
         markScheme: json.markScheme ?? [],
         images: json.images ?? [],
+        diagramRequests: json.diagramRequests ?? [],
         questionCount,
         keyCount,
         markSchemeCount,
@@ -359,6 +372,31 @@ export function PdfUploader() {
           } catch {
             // IndexedDB unavailable / quota — skip this figure, keep the rest.
           }
+        }
+      }
+
+      // Diagram MCQs: render the regions the server flagged from THIS doc's PDF
+      // bytes (vector figures the raster pass can't see), then attach each crop
+      // to its question and clear the needsDiagram hint. Best-effort — any
+      // failure just leaves needsDiagram set for a manual attach in the editor.
+      if (d.diagramRequests.length) {
+        try {
+          const bytes = new Uint8Array(await d.file.arrayBuffer());
+          const rasters = await rasterizeDiagramRequests(bytes, d.diagramRequests);
+          for (const [originalId, raster] of rasters) {
+            const mq = byOriginalId.get(originalId);
+            if (!mq) continue;
+            const id = newImageId();
+            try {
+              await putImage(id, raster.dataUrl);
+              mq.image = { id, alt: "Diagram", width: raster.width, height: raster.height };
+              mq.needsDiagram = false;
+            } catch {
+              // IndexedDB unavailable / quota — keep needsDiagram for a manual attach.
+            }
+          }
+        } catch {
+          // Couldn't read or render this PDF — leave its diagram questions hinted.
         }
       }
     }
