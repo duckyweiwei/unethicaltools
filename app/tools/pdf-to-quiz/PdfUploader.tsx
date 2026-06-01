@@ -4,7 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Quiz, Question } from "@/lib/domain/types";
 import { newImageId } from "@/lib/domain/ids";
-import { type AnswerKeyEntry, type MarkSchemeEntry, mergeQuizzes } from "@/lib/importers/merge";
+import {
+  type AnswerKeyEntry,
+  type DocSet,
+  type MarkSchemeEntry,
+  mergeQuizzes,
+  mergeQuizSets,
+} from "@/lib/importers/merge";
 import { putImage, writeTray, type TrayImage } from "@/lib/storage/image-store";
 // Client-side renderer for labeled-diagram MCQs. Safe to import statically: it
 // only pulls pdf.js in behind a dynamic import (own chunk), never at module load.
@@ -15,7 +21,11 @@ import type { ExtractedImage } from "@/lib/importers/pdf/images";
 import type { DiagramRequest } from "@/lib/importers/pdf/attach";
 import { Alert, Check, Cloud, Close } from "@/components/quiz-editor/icons";
 
-const MAX_FILES = 8;
+// Each file is uploaded and parsed in its OWN request, so this cap is about
+// keeping the staging UI manageable, not any request-size limit. Set high enough
+// to stage several subjects' papers + mark schemes together (they're grouped per
+// subject at merge time — see createQuiz), e.g. ~10 paper+scheme pairs.
+const MAX_FILES = 20;
 const MAX_MB = 4;
 const MAX_BYTES = MAX_MB * 1024 * 1024;
 
@@ -87,6 +97,22 @@ const plural = (n: number) => (n === 1 ? "" : "s");
 function mbLabel(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   return mb < 0.1 ? "<0.1" : mb.toFixed(1);
+}
+
+/** Normalize a filename to a "set" key so a paper and its answer doc group
+ *  together: drop the extension, a trailing " (n)" dedupe suffix, and a trailing
+ *  role word (mark scheme / answers / key / solutions). So "Bio_TZ1_HL.pdf" and
+ *  "Bio_TZ1_HL_markscheme.pdf" both reduce to "bio_tz1_hl". Used only when 2+
+ *  question papers are staged, to match each paper to its OWN key/scheme. */
+function stemKey(fileName: string): string {
+  let s = fileName.replace(/\.pdf$/i, "");
+  s = s.replace(/\s*\(\d+\)\s*$/g, ""); // " (1)" dedupe suffix
+  s = s.replace(
+    /[_\s-]*(?:mark\s*scheme|markscheme|ms|answer\s*key|answers?|key|solutions?|soln)\s*$/i,
+    "",
+  );
+  s = s.replace(/\s*\(\d+\)\s*$/g, ""); // a suffix that preceded the role word
+  return s.trim().replace(/[_\s-]+$/, "").toLowerCase();
 }
 
 /**
@@ -407,16 +433,63 @@ export function PdfUploader() {
   async function createQuiz() {
     if (creating) return;
     const ready = docsRef.current.filter((d) => d.status === "ready");
-    const questionDocs = ready
-      .filter((d) => d.type === "questions" && d.quiz)
-      .map((d) => ({ fileName: d.fileName, quiz: d.quiz as Quiz }));
-    if (!questionDocs.length) {
+    const paperDocs = ready.filter((d) => d.type === "questions" && d.quiz);
+    if (!paperDocs.length) {
       setGlobalError("Add at least one PDF that contains questions.");
       return;
     }
-    const answerKeys = ready.filter((d) => d.type === "answerKey").flatMap((d) => d.answerKey);
-    const markScheme = ready.filter((d) => d.type === "markScheme").flatMap((d) => d.markScheme);
-    const merged = mergeQuizzes({ questionDocs, answerKeys, markScheme });
+    const keyDocs = ready.filter((d) => d.type === "answerKey");
+    const schemeDocs = ready.filter((d) => d.type === "markScheme");
+
+    let merged: Quiz;
+    if (paperDocs.length === 1) {
+      // One paper: every uploaded key/scheme must belong to it (there's no other
+      // paper to mis-fill), so pool them all — robust to any answer-key filename.
+      merged = mergeQuizzes({
+        questionDocs: paperDocs.map((d) => ({ fileName: d.fileName, quiz: d.quiz as Quiz })),
+        answerKeys: keyDocs.flatMap((d) => d.answerKey),
+        markScheme: schemeDocs.flatMap((d) => d.markScheme),
+      });
+    } else {
+      // Several papers: bundle each with ONLY its own key/scheme (matched by
+      // filename stem) so one subject's answers never fill another's questions.
+      // Answers are matched by question number, which collides across papers, so
+      // pooling everything would assign whichever doc was staged last — wrong.
+      const sets = new Map<string, DocSet>();
+      const order: string[] = [];
+      const setFor = (k: string): DocSet => {
+        let s = sets.get(k);
+        if (!s) {
+          s = { questionDocs: [], answerKeys: [], markScheme: [] };
+          sets.set(k, s);
+          order.push(k);
+        }
+        return s;
+      };
+      for (const d of paperDocs) {
+        setFor(stemKey(d.fileName)).questionDocs.push({ fileName: d.fileName, quiz: d.quiz as Quiz });
+      }
+      const unmatched: string[] = [];
+      for (const d of keyDocs) {
+        const s = sets.get(stemKey(d.fileName));
+        if (s) s.answerKeys.push(...d.answerKey);
+        else unmatched.push(d.fileName);
+      }
+      for (const d of schemeDocs) {
+        const s = sets.get(stemKey(d.fileName));
+        if (s) s.markScheme.push(...d.markScheme);
+        else unmatched.push(d.fileName);
+      }
+      merged = mergeQuizSets(order.map((k) => sets.get(k) as DocSet));
+      if (unmatched.length) {
+        // Couldn't tie these to a specific paper by filename. Leaving their answers
+        // unfilled (answerable later via the editor) is safer than guessing them
+        // onto the wrong subject. Non-blocking — the quiz still creates.
+        console.warn(
+          `Bulk import: ${order.length} paper sets matched; could not match these answer files to a paper by name (left unfilled): ${unmatched.join(", ")}`,
+        );
+      }
+    }
 
     setCreating(true);
     // Attach figures FIRST — stashFigures mutates merged.questions[].image by

@@ -52,6 +52,15 @@ export interface QuestionDocInput {
   quiz: Quiz;
 }
 
+/** One INDEPENDENT merge unit: a question paper (or papers) bundled with ONLY the
+ *  answer keys / mark schemes that belong to it. Keeps one subject's key from
+ *  filling another subject's question when several papers are imported together. */
+export interface DocSet {
+  questionDocs: QuestionDocInput[];
+  answerKeys: AnswerKeyEntry[];
+  markScheme: MarkSchemeEntry[];
+}
+
 export interface MergeInput {
   /** Question PDFs, in the order the user staged them. */
   questionDocs: QuestionDocInput[];
@@ -205,6 +214,49 @@ export function mergeQuizzes(input: MergeInput): Quiz {
     id: newQuizId(),
     title: input.title ?? input.questionDocs[0]?.quiz.title ?? "Untitled Quiz",
     source: input.source ?? { type: "pdf" },
+    questions,
+    skipped: skipped.length ? skipped : undefined,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Combine several INDEPENDENT sets into one quiz, matching answers ONLY within
+ * each set — so a Biology mark scheme can never fill a Physics question when many
+ * papers are imported at once. Each set is merged on its own (identical
+ * within-set number/part matching to `mergeQuizzes`), then the resulting
+ * questions are concatenated in set order and renumbered + re-id'd across the
+ * whole quiz so display numbers stay unique. Skipped items are pooled.
+ *
+ * Use this instead of one big `mergeQuizzes` whenever 2+ question papers are
+ * staged together; with a single set it degrades to that set's merge verbatim.
+ */
+export function mergeQuizSets(sets: DocSet[], opts?: { title?: string; source?: QuizSource }): Quiz {
+  const perSet = sets
+    .filter((s) => s.questionDocs.length)
+    .map((s) =>
+      mergeQuizzes({
+        questionDocs: s.questionDocs,
+        answerKeys: s.answerKeys,
+        markScheme: s.markScheme,
+      }),
+    );
+  // One set → nothing to combine; just honor an overriding title if given.
+  if (perSet.length === 1) {
+    return opts?.title ? { ...perSet[0], title: opts.title } : perSet[0];
+  }
+
+  let seq = 0;
+  const questions: Question[] = [];
+  for (const q of perSet.flatMap((p) => p.questions)) {
+    seq += 1;
+    questions.push({ ...q, id: newQuestionId(seq), number: seq });
+  }
+  const skipped: SkippedItem[] = perSet.flatMap((p) => p.skipped ?? []);
+  return {
+    id: newQuizId(),
+    title: opts?.title ?? perSet[0]?.title ?? "Untitled Quiz",
+    source: opts?.source ?? { type: "pdf" },
     questions,
     skipped: skipped.length ? skipped : undefined,
     createdAt: new Date().toISOString(),

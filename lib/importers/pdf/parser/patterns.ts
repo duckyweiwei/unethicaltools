@@ -157,6 +157,18 @@ export function isAnswerKeyHeader(line: string): boolean {
   return /^\s*(?:answer\s*key|answers?|key)\s*:?\s*$/i.test(line);
 }
 
+// End-matter that trails the LAST question on an exam paper: a references /
+// bibliography list, the content disclaimer, or acknowledgements. Anchored at
+// BOTH ends so it only matches a standalone header line ("References:",
+// "Disclaimer:") — never an in-question mention like "see the reference table".
+// Used to stop question accumulation so a trailing citation dump doesn't bleed
+// into the final question's stem or last option.
+export function isEndMatter(line: string): boolean {
+  return /^\s*(?:references?|bibliography|acknowledge?ments?|disclaimer|works\s+cited)\s*[:.]?\s*$/i.test(
+    line,
+  );
+}
+
 // "Section A: Multiple Choice" / "Part 2 — Short Answer" ...
 // We require a delimiter right after the label so prose like
 // "Section B is worth 20 points" (no colon) is NOT treated as a header.
@@ -224,9 +236,21 @@ export function matchKeyText(line: string): { number: number; text: string } | n
 export function isKeyLine(line: string): boolean {
   const pairs = keyPairs(line);
   if (pairs.length === 0) return false;
-  const leftover = line.replace(KEY_PAIR_RE, " ").replace(/[\s,;|]+/g, "").trim();
+  const leftover = line
+    .replace(KEY_PAIR_RE, " ")
+    .replace(BLANK_CELL_RE, " ") // tolerate "46. –" blank cells in a fixed grid
+    .replace(/[\s,;|]+/g, "")
+    .trim();
   return leftover.length === 0;
 }
+
+// A fixed-size answer grid (common in official mark schemes) reserves a cell for
+// every possible question number and leaves the unused ones blank, rendered as
+// "46. –" (number + a dash placeholder). Those blanks must NOT disqualify an
+// otherwise-pure key row like "16. C 31. D 46. –" — without stripping them, the
+// leftover "46.–" makes isKeyLine reject the row and its real pairs are lost.
+// Covers hyphen, en/em dash, figure dash, and minus sign.
+const BLANK_CELL_RE = /(\d{1,3})\s*[.):]\s*[–—‐\-−]+/g;
 
 export function isSequential(labels: string[]): boolean {
   if (labels.length < 2) return false;

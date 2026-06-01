@@ -21,7 +21,7 @@ import { parseExtracted } from "../lib/importers/pdf/parser/index";
 import { extractAnswerKeyPairs } from "../lib/importers/pdf/parser/index";
 import { parseMarkScheme } from "../lib/importers/pdf/parser/index";
 import { computeDiagramRequests } from "../lib/importers/pdf/attach";
-import { mergeQuizzes, type AnswerKeyEntry, type MarkSchemeEntry } from "../lib/importers/merge";
+import { mergeQuizzes, mergeQuizSets, type DocSet, type AnswerKeyEntry, type MarkSchemeEntry } from "../lib/importers/merge";
 import type { Quiz, Question } from "../lib/domain/types";
 
 const DIR = "/Users/weihaofu/Desktop/testingIBpapers";
@@ -195,8 +195,23 @@ async function main() {
       if (examples.length < 12) examples.push(`    ${q.sourceLabel} Q${q.number}: bulk="${q.correct}" but own-subject scheme="${own ?? "(none)"}"`);
     }
   }
-  console.log(`\nCONTAMINATION: ${contaminated}/${checked} answered MCQs got a DIFFERENT answer under bulk-pool vs correct per-subject grouping.`);
+  console.log(`\n(OLD) one-pool merge CONTAMINATION: ${contaminated}/${checked} sampled answered MCQs got a DIFFERENT (foreign-subject) answer.`);
   if (examples.length) console.log("Examples:\n" + examples.join("\n"));
+
+  // ---- Scenario A-fixed: group by subject set, match within (the #95 fix) ----
+  console.log(`\n================ BULK UPLOAD WITH #95 FIX: mergeQuizSets (group by subject) ================\n`);
+  const docSets: DocSet[] = [...groups.entries()]
+    .map(([, members]) => ({
+      questionDocs: members.filter((m) => m.type === "questions" && !m.isScheme).map((p) => ({ fileName: p.file, quiz: p.quiz })),
+      answerKeys: members.filter((m) => m.type === "answerKey").flatMap((m) => m.answerKey),
+      markScheme: members.filter((m) => m.type === "markScheme").flatMap((m) => m.markScheme),
+    }))
+    .filter((s) => s.questionDocs.length);
+  const fixed = mergeQuizSets(docSets);
+  const fm = mcqStats(fixed.questions);
+  console.log(`Grouped into ${docSets.length} subject sets → ONE quiz of ${fixed.questions.length} questions.`);
+  console.log(`MCQ answered: ${fm.answered}/${fm.mcqTotal} (every answer comes from its OWN subject's scheme — 0 cross-subject contamination by construction).`);
+  console.log(`Compare: one-pool merge reported ${bigMs.answered} "answered" but ~${Math.round(100 * contaminated / Math.max(1, checked))}% of the sample was the wrong subject's answer.`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

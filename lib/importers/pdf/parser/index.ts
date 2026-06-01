@@ -5,6 +5,7 @@ import type { ExtractedDoc, Word } from "../extract";
 import { scoreQuestion } from "./confidence";
 import {
   isAnswerKeyHeader,
+  isEndMatter,
   isKeyLine,
   isSequential,
   type KeyPair,
@@ -95,6 +96,16 @@ export function parseExtracted(doc: ExtractedDoc, source: QuizSource): Quiz {
     const line = doc.lines[li];
     const text = line.text;
     if (!text.trim()) continue;
+
+    // End-matter ("References:", "Disclaimer:", "Acknowledgements") trails the
+    // last question on a real exam paper — a citation/copyright block that would
+    // otherwise bleed into the final question's stem or last option (its numbered
+    // citations look like a sub-enumeration). Once we've begun parsing questions,
+    // the first such header ends the paper: commit the open question and stop.
+    if ((cur || drafts.length) && isEndMatter(text)) {
+      commit();
+      break;
+    }
 
     // Section header ("Section B: Short Answer") — closes the current question
     // and flips MCQ-eligibility for everything that follows.
