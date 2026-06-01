@@ -33,6 +33,7 @@ export function SiteHeader() {
           className="mr-2 rounded-lg px-2 py-1.5 text-sm font-semibold tracking-tight text-neutral-900 outline-none transition focus-visible:ring-2 focus-visible:ring-neutral-900"
         >
           unethical<span className="text-neutral-400">tools</span>
+          <span className="ml-0.5 align-super text-[10px] font-semibold text-neutral-400">beta</span>
         </Link>
 
         <nav aria-label="Primary" className="flex items-center gap-0.5">

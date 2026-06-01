@@ -12,6 +12,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Quiz } from "@/lib/domain/types";
 import { decodeQuiz, tokenFromHash } from "@/lib/share/link";
 import { saveQuiz } from "@/lib/storage/quiz-library";
+import { useAccount } from "@/lib/auth/account";
+import { AccountModal } from "@/components/shell/AccountMenu";
 import { Check, Folder, Grid, Play, Share } from "@/components/quiz-editor/icons";
 
 type Status = "loading" | "preview" | "empty" | "error" | "added";
@@ -21,6 +23,10 @@ export function ImportClient() {
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Saving a shared quiz links it to an account; an anonymous visitor must sign
+  // in first (nothing is stored locally while signed out).
+  const account = useAccount();
+  const [signInOpen, setSignInOpen] = useState(false);
 
   useEffect(() => {
     const token = tokenFromHash(window.location.hash);
@@ -50,6 +56,11 @@ export function ImportClient() {
 
   function addToLibrary() {
     if (!quiz) return;
+    if (!account) {
+      // Sign in first — then they can tap "Add to my library" again to save.
+      setSignInOpen(true);
+      return;
+    }
     const saved = saveQuiz(quiz);
     setSavedId(saved.id);
     setStatus("added");
@@ -131,7 +142,7 @@ export function ImportClient() {
               onClick={addToLibrary}
               className="inline-flex items-center gap-2 rounded-full bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-neutral-700"
             >
-              Add to my library
+              {account ? "Add to my library" : "Sign in to add"}
             </button>
           </div>
         </div>
@@ -170,6 +181,8 @@ export function ImportClient() {
           </div>
         </div>
       )}
+
+      {signInOpen && <AccountModal account={null} onClose={() => setSignInOpen(false)} />}
     </div>
   );
 }

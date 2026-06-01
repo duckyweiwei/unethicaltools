@@ -178,14 +178,33 @@ function write(list: StoredQuiz[]): void {
   }
 }
 
-/** Every published quiz, newest first. */
-export function listQuizzes(): StoredQuiz[] {
-  return read().sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
+/** True when this quiz belongs to the given signed-in owner. Legacy quizzes with
+ *  no stamped owner (`null`/`undefined`) are treated as the current user's, so an
+ *  upgrade never hides a device's existing library; they're claimed to the owner
+ *  on the next save (see saveQuiz). */
+function ownedBy(q: StoredQuiz, owner: string): boolean {
+  return q.ownerId === owner || q.ownerId == null;
 }
 
-/** A single published quiz by id, or null if not in the library. */
+/** Every published quiz owned by the SIGNED-IN account, newest first. Signed out
+ *  (no account) returns nothing — quizzes are private to the account that made
+ *  them, so an anonymous visitor neither sees nor stores any. */
+export function listQuizzes(): StoredQuiz[] {
+  const owner = getAccount()?.id;
+  if (!owner) return [];
+  return read()
+    .filter((q) => ownedBy(q, owner))
+    .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
+}
+
+/** A single published quiz by id — but only if it belongs to the signed-in
+ *  account. Null when signed out or when the quiz is owned by someone else, so a
+ *  guessed/stale `?id=` can't surface another account's quiz. */
 export function getQuiz(id: string): StoredQuiz | null {
-  return read().find((q) => q.id === id) ?? null;
+  const owner = getAccount()?.id;
+  if (!owner) return null;
+  const q = read().find((x) => x.id === id) ?? null;
+  return q && ownedBy(q, owner) ? q : null;
 }
 
 /**

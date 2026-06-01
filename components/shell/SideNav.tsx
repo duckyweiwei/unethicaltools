@@ -10,6 +10,7 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { listQuizzes, listFolders, type StoredQuiz, type Folder as FolderType } from "@/lib/storage/quiz-library";
+import { useAccount } from "@/lib/auth/account";
 import { folderIconClass } from "@/lib/folder-colors";
 import { BarChart, Folder, Grid, Upload } from "@/components/quiz-editor/icons";
 
@@ -37,11 +38,13 @@ export function SideNav() {
   const activeReviewId = searchParams.get("id");
   const [quizzes, setQuizzes] = useState<StoredQuiz[] | null>(null);
   const [folders, setFolders] = useState<FolderType[]>([]);
+  // Quiz list is scoped to the signed-in account; re-read when identity changes.
+  const account = useAccount();
 
   useEffect(() => {
     setQuizzes(listQuizzes());
     setFolders(listFolders());
-  }, []);
+  }, [account?.id]);
 
   return (
     <aside className="hidden w-44 shrink-0 border-r border-neutral-200 bg-white/40 lg:block">

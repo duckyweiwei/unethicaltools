@@ -23,7 +23,13 @@ export interface Account {
 
 const KEY = "pdfquiz:account";
 
+// The persisted LOCAL device profile.
 let current: Account | null = null;
+// A Google session, mirrored in (NOT persisted — it's re-derived from NextAuth on
+// each load by Providers' sync). When present it IS the effective account, so the
+// quiz library scopes/stamps ownership uniformly whether you signed in locally or
+// with Google. Google wins over the local profile, matching the account menu.
+let sessionAccount: Account | null = null;
 let hydrated = false;
 const listeners = new Set<() => void>();
 
@@ -73,10 +79,43 @@ export function subscribe(cb: () => void): () => void {
   };
 }
 
-/** The current account, or null when signed out. Non-reactive; use `useAccount`
- *  inside components. */
+/** The current account — a live Google session if there is one, else the local
+ *  device profile, else null when signed out. Non-reactive; use `useAccount`
+ *  inside components. This is the single identity the quiz library scopes by. */
 export function getAccount(): Account | null {
-  return current;
+  return sessionAccount ?? current;
+}
+
+/**
+ * Mirror the NextAuth (Google) session into the account store so `getAccount()`
+ * reflects it everywhere — including the non-React quiz library. Called by the
+ * app shell whenever the session changes. Idempotent: a no-op (no emit, same
+ * object ref) when the derived identity is unchanged, so it's safe in an effect.
+ * The id is derived from the Google email so the same user keeps the same owner
+ * across reloads and devices.
+ */
+export function setSessionAccount(
+  user: { name?: string | null; email?: string | null } | null,
+): void {
+  if (!user) {
+    if (sessionAccount === null) return;
+    sessionAccount = null;
+    emit();
+    return;
+  }
+  const id = user.email ? `google:${user.email.toLowerCase()}` : "google:user";
+  const name = user.name?.trim() || user.email || "You";
+  const email = user.email ?? undefined;
+  if (
+    sessionAccount &&
+    sessionAccount.id === id &&
+    sessionAccount.name === name &&
+    sessionAccount.email === email
+  ) {
+    return; // unchanged — keep the same ref so useSyncExternalStore stays stable
+  }
+  sessionAccount = { id, name, email, createdAt: sessionAccount?.createdAt ?? new Date().toISOString() };
+  emit();
 }
 
 /** Create the local account, or update name/email if one already exists. */

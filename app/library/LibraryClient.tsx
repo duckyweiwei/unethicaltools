@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { useAccount } from "@/lib/auth/account";
+import { AccountModal } from "@/components/shell/AccountMenu";
 import {
   listQuizzes,
   deleteQuiz,
@@ -79,6 +82,11 @@ function formatDate(iso: string): string {
 export function LibraryClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Quizzes are private to the signed-in account (local profile or Google). We
+  // gate the whole library on having one, and re-read when the identity resolves.
+  const account = useAccount();
+  const { status: sessionStatus } = useSession();
+  const [signInOpen, setSignInOpen] = useState(false);
   const [items, setItems] = useState<StoredQuiz[] | null>(null);
   const [folders, setFolders] = useState<FolderType[]>([]);
   // Multi-select to combine several quizzes into one study/test run.
@@ -107,7 +115,9 @@ export function LibraryClient() {
   useEffect(() => {
     setItems(listQuizzes());
     setFolders(listFolders());
-  }, []);
+    // Re-read when the signed-in identity changes: signing in reveals that
+    // account's quizzes; signing out clears them.
+  }, [account?.id]);
 
   // Drive the open folder from the URL query so a sidebar link click — which
   // only changes the query string and does NOT remount this already-mounted
@@ -285,6 +295,47 @@ export function LibraryClient() {
       onMoveTo={(fid) => moveTo(q.id, fid)}
     />
   );
+
+  // While the session is still resolving we don't yet know whether there's an
+  // account, so show the spinner rather than flashing the signed-out prompt.
+  if (!account && sessionStatus === "loading") {
+    return (
+      <div className="flex justify-center py-24">
+        <span className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-900" />
+      </div>
+    );
+  }
+
+  // Signed out → quizzes are private to an account, so there's nothing to show.
+  // Prompt to sign in (local profile or Google, via the same modal as the header).
+  if (!account) {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16">
+        <h1 className="text-3xl font-semibold tracking-tight text-neutral-900">My quizzes</h1>
+        <p className="mt-2 text-[15px] text-neutral-500">Your quizzes are private to your account.</p>
+        <div className="mt-8 flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-neutral-300 bg-white px-6 py-20 text-center">
+          <span className="grid h-12 w-12 place-items-center rounded-full bg-neutral-100 text-neutral-400">
+            <Folder className="h-6 w-6" />
+          </span>
+          <div>
+            <p className="text-sm font-medium text-neutral-700">Sign in to see your quizzes</p>
+            <p className="mx-auto mt-1 max-w-sm text-sm text-neutral-400">
+              The quizzes you make are saved to your account. Sign in to see the ones you&rsquo;ve
+              made &mdash; or to start building your library.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSignInOpen(true)}
+            className="mt-1 inline-flex items-center gap-2 rounded-full bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-neutral-700"
+          >
+            Sign in
+          </button>
+        </div>
+        {signInOpen && <AccountModal account={null} onClose={() => setSignInOpen(false)} />}
+      </div>
+    );
+  }
 
   return (
     <div className={cx("mx-auto max-w-6xl px-6 py-12", selectMode && "pb-24")}>

@@ -190,7 +190,7 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <Stars />
             <span className="text-sm text-neutral-500">
-              Loved by <span className="font-semibold text-neutral-700">50,000+</span> students
+              Loved by <span className="font-semibold text-neutral-700">thousands</span> of students
             </span>
           </div>
         </section>
@@ -253,7 +253,7 @@ export default function Home() {
         <div className="mx-auto mb-6 flex max-w-6xl items-center justify-center gap-3 px-6 text-center">
           <Stars />
           <span className="text-sm font-medium text-neutral-700">
-            Trusted by over 50,000 students preparing for their exams
+            Trusted by students all over the globe
           </span>
         </div>
 
@@ -445,7 +445,7 @@ export default function Home() {
         <div className="mx-auto max-w-6xl px-6 py-16 sm:py-20">
           <div className="flex flex-col items-center text-center">
             <span className="text-xs font-medium uppercase tracking-[0.3em] text-neutral-400">
-              Trusted by 50k+ students
+              Trusted by students worldwide
             </span>
             <h2 className="mt-3 text-balance text-2xl font-semibold tracking-tight text-neutral-900 sm:text-3xl">
               What students are saying
