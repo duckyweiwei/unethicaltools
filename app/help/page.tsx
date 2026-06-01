@@ -26,8 +26,9 @@ export default function HelpPage() {
         <p>
           Text-based multiple-choice PDFs — practice tests, past papers, and question banks — work
           best, because the text can be read directly from the file. Scanned or photographed pages
-          have no selectable text, so they extract poorly. Files up to 50 pages and 6&nbsp;MB are
-          supported.
+          have no selectable text, so they extract poorly. Files up to about 50 pages and
+          30&nbsp;MB are supported — larger files are read right in your browser, so they aren&rsquo;t
+          capped by upload size.
         </p>
       </Section>
 

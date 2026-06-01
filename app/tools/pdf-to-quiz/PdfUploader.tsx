@@ -15,6 +15,10 @@ import { putImage, writeTray, type TrayImage } from "@/lib/storage/image-store";
 // Client-side renderer for labeled-diagram MCQs. Safe to import statically: it
 // only pulls pdf.js in behind a dynamic import (own chunk), never at module load.
 import { rasterizeDiagramRequests } from "@/lib/importers/pdf/client-raster";
+// Files too big to upload (Vercel caps a serverless request body at ~4.5 MB) are
+// parsed entirely in the browser by this — same engine/result as the server,
+// minus server-only raster figures. Lazily pulls pdf.js, like client-raster.
+import { parsePdfClient, PdfTooLargeError } from "@/lib/importers/pdf/client-parse";
 // Type-only: the runtime modules pull in unpdf/node:zlib and must never reach
 // the client bundle. `import type` is erased at compile time, so this is safe.
 import type { ExtractedImage } from "@/lib/importers/pdf/images";
@@ -26,8 +30,18 @@ import { Alert, Check, Cloud, Close } from "@/components/quiz-editor/icons";
 // to stage several subjects' papers + mark schemes together (they're grouped per
 // subject at merge time — see createQuiz), e.g. ~10 paper+scheme pairs.
 const MAX_FILES = 20;
-const MAX_MB = 4;
+// At/under this, a file is uploaded to the server parser — we stay safely under
+// Vercel's ~4.5 MB serverless request-body limit. Bigger files are parsed in the
+// browser instead (no upload), so they're not blocked by that limit.
+const SERVER_MAX_MB = 4;
+const SERVER_MAX_BYTES = SERVER_MAX_MB * 1024 * 1024;
+// Hard ceiling for EITHER path — a guard so an absurd file can't freeze the tab
+// while pdf.js rasterizes it.
+const MAX_MB = 30;
 const MAX_BYTES = MAX_MB * 1024 * 1024;
+// Page cap for the in-browser parse: generous (no serverless time budget) but
+// bounded so a thousand-page PDF can't hang the browser.
+const CLIENT_MAX_PAGES = 80;
 
 // Cap how many auto-extracted figures we carry into the review tray across the
 // whole staged set — bounds the IndexedDB writes and keeps the tray scannable.
@@ -127,6 +141,44 @@ function candidatesFor(d: StagedDoc): DocType[] {
   if (d.hasKey) c.push("answerKey");
   if (d.hasMarkScheme) c.push("markScheme");
   return c.length ? c : [d.type ?? "answerKey"];
+}
+
+/** Turn a parse result (from the server OR the in-browser parser — identical
+ *  shape) into the "ready" doc patch: counts, auto-classification, and payload.
+ *  A mark scheme is a numbered-answer doc that ISN'T a question paper; auto-pick
+ *  questions first, then a clean letter key, then a scheme — the user can flip. */
+function readyPatch(json: {
+  quiz: Quiz;
+  answerKey?: AnswerKeyEntry[];
+  markScheme?: MarkSchemeEntry[];
+  images?: ExtractedImage[];
+  diagramRequests?: DiagramRequest[];
+  pages?: number;
+}): Partial<StagedDoc> {
+  const questionCount = json.quiz.questions.length;
+  const keyCount = json.answerKey?.length ?? 0;
+  const markSchemeCount = json.markScheme?.length ?? 0;
+  const hasQuestions = questionCount >= 1;
+  const hasKey = keyCount >= 1;
+  const hasMarkScheme = markSchemeCount >= 1 && !hasQuestions;
+  return {
+    status: "ready",
+    progress: 100,
+    stage: "",
+    type: hasQuestions ? "questions" : hasKey ? "answerKey" : hasMarkScheme ? "markScheme" : "answerKey",
+    hasQuestions,
+    hasKey,
+    hasMarkScheme,
+    quiz: json.quiz,
+    answerKey: json.answerKey ?? [],
+    markScheme: json.markScheme ?? [],
+    images: json.images ?? [],
+    diagramRequests: json.diagramRequests ?? [],
+    questionCount,
+    keyCount,
+    markSchemeCount,
+    pages: json.pages ?? 0,
+  };
 }
 
 /**
@@ -260,33 +312,7 @@ export function PdfUploader() {
         patch(uid, { status: "error", error: json.error ?? "Could not parse this PDF.", progress: 0 });
         return;
       }
-      const questionCount = json.quiz.questions.length;
-      const keyCount = json.answerKey?.length ?? 0;
-      const markSchemeCount = json.markScheme?.length ?? 0;
-      // A mark scheme is a numbered-answer doc that ISN'T a question paper — its
-      // numbered lines are answers, not questions. Auto-pick: questions first,
-      // then a clean letter key (conservative), then a scheme. The user can flip.
-      const hasQuestions = questionCount >= 1;
-      const hasKey = keyCount >= 1;
-      const hasMarkScheme = markSchemeCount >= 1 && !hasQuestions;
-      patch(uid, {
-        status: "ready",
-        progress: 100,
-        stage: "",
-        type: hasQuestions ? "questions" : hasKey ? "answerKey" : hasMarkScheme ? "markScheme" : "answerKey",
-        hasQuestions,
-        hasKey,
-        hasMarkScheme,
-        quiz: json.quiz,
-        answerKey: json.answerKey ?? [],
-        markScheme: json.markScheme ?? [],
-        images: json.images ?? [],
-        diagramRequests: json.diagramRequests ?? [],
-        questionCount,
-        keyCount,
-        markSchemeCount,
-        pages: json.pages ?? 0,
-      });
+      patch(uid, readyPatch({ ...json, quiz: json.quiz }));
     };
     xhr.onerror = () => {
       stopTrickle(uid);
@@ -299,6 +325,47 @@ export function PdfUploader() {
     xhr.send(form);
   }
 
+  /** Parse a file ENTIRELY in the browser (no upload) — used for files too big
+   *  for the serverless body limit. Same result as the server path; figures are
+   *  the only thing skipped (vector diagrams still render via diagramRequests). */
+  async function parseDocClient(uid: string, file: File) {
+    // No upload bytes to drive progress, so just reveal the bar after the delay
+    // and run a trickle while pdf.js works on the main thread.
+    const barTimer = window.setTimeout(() => {
+      barTimersRef.current.delete(uid);
+      setDocs((ds) =>
+        ds.map((d) => (d.uid === uid && d.status === "parsing" ? { ...d, showBar: true } : d)),
+      );
+    }, BAR_DELAY_MS);
+    barTimersRef.current.set(uid, barTimer);
+    patch(uid, { progress: 25, stage: STAGE_READ });
+    startTrickle(uid);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await parsePdfClient(bytes, file.name, { maxPages: CLIENT_MAX_PAGES });
+      stopTrickle(uid);
+      clearBarTimer(uid);
+      if (!result.quiz.questions.length && !result.answerKey.length && !result.markScheme.length) {
+        patch(uid, {
+          status: "error",
+          error:
+            "No questions or answer key were found. This tool supports text-based MCQ PDFs (not scanned or image-only files).",
+          progress: 0,
+        });
+        return;
+      }
+      patch(uid, readyPatch(result));
+    } catch (e) {
+      stopTrickle(uid);
+      clearBarTimer(uid);
+      const msg =
+        e instanceof PdfTooLargeError
+          ? `This PDF has ${e.pages} pages. Please split it — up to ${e.maxPages} pages each.`
+          : "Couldn’t read this PDF in your browser. It may be scanned, image-only, or corrupted.";
+      patch(uid, { status: "error", error: msg, progress: 0 });
+    }
+  }
+
   function addFiles(fileList: FileList | null) {
     if (!fileList || !fileList.length) return;
     setGlobalError(null);
@@ -307,6 +374,7 @@ export function PdfUploader() {
     let slots = MAX_FILES - docsRef.current.length;
     const additions: StagedDoc[] = [];
     const toUpload: Array<{ uid: string; file: File }> = [];
+    const toClientParse: Array<{ uid: string; file: File }> = [];
     const problems: string[] = [];
 
     for (const file of Array.from(fileList)) {
@@ -331,12 +399,16 @@ export function PdfUploader() {
       slots -= 1;
       const uid = newUid();
       additions.push(makeDoc(file, "parsing", null, uid));
-      toUpload.push({ uid, file });
+      // Small files upload to the server parser; bigger ones (over the serverless
+      // request-body limit) are parsed in the browser instead — no upload.
+      if (file.size > SERVER_MAX_BYTES) toClientParse.push({ uid, file });
+      else toUpload.push({ uid, file });
     }
 
     if (additions.length) setDocs((prev) => [...prev, ...additions]);
     if (problems.length) setGlobalError(problems.join(" · "));
     toUpload.forEach((u) => uploadDoc(u.uid, u.file));
+    toClientParse.forEach((u) => void parseDocClient(u.uid, u.file));
   }
 
   function removeDoc(uid: string) {
